@@ -79,39 +79,6 @@ const config: Config = {
         },
       ],
     },
-    footer: {
-      style: 'dark',
-      links: [
-        {
-          title: 'Knowledge Base',
-          items: [
-            {
-              label: 'Architecture & Docs',
-              to: '/docs/intro',
-            },
-          ],
-        },
-        {
-          title: 'Writings',
-          items: [
-            {
-              label: 'RCA & Tech Blog',
-              to: '/blog',
-            },
-          ],
-        },
-        {
-          title: 'Channels',
-          items: [
-            {
-              label: 'GitHub',
-              href: 'https://github.com/djpibo',
-            },
-          ],
-        },
-      ],
-      copyright: `Copyright © ${new Date().getFullYear()} deejay. Built with Docusaurus.`,
-    },
     prism: {
       theme: prismThemes.github,
       darkTheme: prismThemes.dracula,
