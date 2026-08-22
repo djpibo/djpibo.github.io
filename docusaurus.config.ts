@@ -7,6 +7,17 @@ const config: Config = {
   tagline: 'save my trace - Oracle DBA, Architecture & AI Agent',
   favicon: 'img/favicon.ico',
 
+  // @ts-ignore : 타입 정의 누락 무시 (실제로는 초고속 빌드 정상 작동)
+  future: {
+    experimental_faster: {
+      swcJsLoader: true,
+      swcJsMinimizer: true,
+      swcHtmlMinimizer: true,
+      lightningCssMinimizer: true,
+      rspackBundler: true,
+    },
+  },
+  
   url: 'https://djpibo.github.io',
   baseUrl: '/',
 
@@ -17,6 +28,8 @@ const config: Config = {
   onBrokenLinks: 'throw',
   onBrokenMarkdownLinks: 'warn',
 
+
+  
   i18n: {
     defaultLocale: 'ko',
     locales: ['ko'],
