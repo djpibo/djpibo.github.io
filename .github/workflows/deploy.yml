@@ -20,12 +20,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm install
-      - run: npm run build
+
+      - name: Enable Corepack & Zero-install
+        run: |
+          corepack enable
+          yarn install --immutable
+
+      - name: Build Docusaurus
+        run: yarn build
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: ./build
