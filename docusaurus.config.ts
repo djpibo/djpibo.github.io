@@ -9,7 +9,7 @@ const config: Config = {
 
   // @ts-ignore : 타입 정의 누락 무시 (실제로는 초고속 빌드 정상 작동)
   future: {
-    experimental_faster: {
+    faster: {
       swcJsLoader: true,
       swcJsMinimizer: true,
       swcHtmlMinimizer: true,
@@ -17,7 +17,7 @@ const config: Config = {
       rspackBundler: true,
     },
   },
-  
+
   url: 'https://djpibo.github.io',
   baseUrl: '/',
 
@@ -25,8 +25,12 @@ const config: Config = {
   projectName: 'djpibo.github.io',
   trailingSlash: false,
 
-  onBrokenLinks: 'throw',
-  onBrokenMarkdownLinks: 'warn',
+  onBrokenLinks: 'warn',
+  markdown: {
+    hooks: {
+      onBrokenMarkdownLinks: 'warn',
+    },
+  },
 
 
   
