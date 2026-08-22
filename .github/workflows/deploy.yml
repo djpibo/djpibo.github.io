@@ -24,9 +24,17 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
-      - name: Enable Corepack & Zero-install
+      - name: Restore node_modules & build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            .docusaurus
+          key: ${{ runner.os }}-deps-${{ hashFiles('yarn.lock', 'package.json') }}
+
+      - name: Install dependencies
         run: |
           corepack enable
           yarn install --immutable

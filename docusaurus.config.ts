@@ -7,10 +7,6 @@ const config: Config = {
   tagline: 'save my trace - Oracle DBA, Architecture & AI Agent',
   favicon: 'img/favicon.ico',
 
-  future: {
-    v4: true,
-  },
-
   url: 'https://djpibo.github.io',
   baseUrl: '/',
 
