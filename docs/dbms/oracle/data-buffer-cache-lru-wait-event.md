@@ -5,6 +5,10 @@ sidebar_label: Data Buffer Cache & LRU Wait Event
 sidebar_position: 2
 ---
 
+import AuthorHeader from '@site/src/components/AuthorHeader';
+
+<AuthorHeader date="2026년 8월 24일" readingTime="약 6분" />
+
 "배치 지연 사태"
 신규로 수정된 배치가 기존보다 2배 이상 지연되는 일이 생기고야 말았다.
 어느 구간에서 지연이 발생했는지 확인하기 위해 실행 중인 플랜을 살펴보았다.
