@@ -48,4 +48,6 @@ update를 수행하기 위해서이다.
 반면 consistent 모드는 undo에서 특정 MVCC 버전에 해당되는 블록을 가져온다.
 특정 세션에서 커밋되지 않은 업데이트가 발생할 경우 데이터 일관성을 보장하기 위해 변경 전 블록이 생성되는데 그걸 검색한다는 뜻이다.
 
-
+기본값으로 사용되는 LRU-based, block-level replacement algorithm 알고리즘은 dirty 버퍼와 non-dirty 버퍼에 대한 포인터가 포함된 LRU(Least Recently Used) 목록을 사용한다.
+LRU 목록에는 Hot End와 Cold End가 있고 cold 버퍼는 최근에 사용되지 않은 버퍼이며 hot 버퍼는 자주 액세스되며 최근에 사용된 버퍼를 의미한다.
+개념적으로는 하나의 LRU만 존재하지만, 데이터 동시성을 위해 데이터베이스는 실제로 여러 개의 LRU를 사용한다.

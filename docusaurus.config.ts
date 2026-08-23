@@ -32,8 +32,6 @@ const config: Config = {
     },
   },
 
-
-  
   i18n: {
     defaultLocale: 'ko',
     locales: ['ko'],
