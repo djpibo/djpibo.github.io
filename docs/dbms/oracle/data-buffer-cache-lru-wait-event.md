@@ -3,11 +3,9 @@ id: data-buffer-cache-lru-wait-event
 title: "배치 지연 현상의 원인을 분석하기 위해 오라클 내부 메모리 구조 분석"
 sidebar_label: Data Buffer Cache & LRU Wait Event
 sidebar_position: 2
+date: "2026년 8월 24일"
+reading_time: "약 6분"
 ---
-
-import AuthorHeader from '@site/src/components/AuthorHeader';
-
-<AuthorHeader date="2026년 8월 24일" readingTime="약 6분" />
 
 "배치 지연 사태"
 신규로 수정된 배치가 기존보다 2배 이상 지연되는 일이 생기고야 말았다.
