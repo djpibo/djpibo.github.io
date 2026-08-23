@@ -13,19 +13,19 @@ const CategoryCards = [
   {
     title: '🚨 CASE: 2026 1Q Reports',
     desc: '올영 세일 피크타임 장애 분석 보고서 및 영구 방지 대책(RCA).',
-    link: '/docs/category/report',
+    link: '/docs/category/2026-1q',
     badge: 'Production RCA',
   },
   {
     title: '🤖 DBMS AI Agent',
     desc: 'AWS Bedrock API, Agentcore, Datadog Workflow 기반 Autonomous DBA 에이전트.',
-    link: '/docs/intro',
+    link: '/docs/category/ai-agent',
     badge: 'Next-Gen DB',
   },
   {
     title: '⚡ DevOps & CI/CD Tuning',
     desc: 'GitHub Actions 파이프라인, Yarn v4 Zero-install, Rust 기반 빌드 환경(Rspack) 극한의 최적화.',
-    link: '/blog/docusaurus-build-optimization',
+    link: '/blog/build-optimization',
     badge: 'Performance',
   },
 ];
@@ -45,9 +45,9 @@ export default function Home(): ReactNode {
                 <div style={{
                   padding: '2rem',
                   borderRadius: '14px',
-                  border: '1px solid #334155',
+                  border: '1px solid var(--ifm-color-emphasis-300)',
                   height: '100%',
-                  background: '#1e293b',
+                  background: 'var(--ifm-card-background-color, var(--ifm-background-surface-color))',
                   display: 'flex',
                   flexDirection: 'column',
                   justifyContent: 'space-between',
@@ -58,17 +58,17 @@ export default function Home(): ReactNode {
                       fontSize: '0.75rem',
                       padding: '4px 9px',
                       borderRadius: '6px',
-                      background: '#0f172a',
-                      color: '#38bdf8',
-                      border: '1px solid #1e40af',
+                      background: 'var(--ifm-color-emphasis-100)',
+                      color: 'var(--ifm-color-primary)',
+                      border: '1px solid var(--ifm-color-primary-dark)',
                       fontWeight: 600
                     }}>
                       {card.badge}
                     </span>
-                    <h3 style={{ fontSize: '1.25rem', margin: '1.2rem 0 0.6rem 0', color: '#f8fafc' }}>
+                    <h3 style={{ fontSize: '1.25rem', margin: '1.2rem 0 0.6rem 0', color: 'var(--ifm-heading-color)' }}>
                       {card.title}
                     </h3>
-                    <p style={{ color: '#94a3b8', fontSize: '0.92rem', lineHeight: '1.6' }}>
+                    <p style={{ color: 'var(--ifm-color-emphasis-700)', fontSize: '0.92rem', lineHeight: '1.6' }}>
                       {card.desc}
                     </p>
                   </div>
@@ -76,7 +76,7 @@ export default function Home(): ReactNode {
                     to={card.link} 
                     style={{ 
                       fontWeight: 600, 
-                      color: '#38bdf8', 
+                      color: 'var(--ifm-color-primary)', 
                       marginTop: '1.2rem',
                       display: 'inline-flex',
                       alignItems: 'center'

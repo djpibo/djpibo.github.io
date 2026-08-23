@@ -2,12 +2,8 @@
 slug: build-optimization
 title: "[CI/CD] GitHub Actions 빌드 속도 70% 단축기: npm 한계 극복부터 Rust 번들러(Rspack) 도입까지"
 date: 2026-08-23
-authors:
-  - name: Dongju Lee
-    title: Oracle DBA
-    url: https://github.com/djpibo
-    image_url: https://github.com/djpibo.png
-tags: [CI/CD, Yarn v4, Rspack, Docusaurus, GitHub Actions, Optimization, TroubleShooting]
+authors: [deejay]
+tags: [ci-cd, yarn-v4, rspack, docusaurus, github-actions, optimization, troubleshooting]
 ---
 기술 블로그(Docusaurus)의 CI/CD 환경을 GitHub Actions로 구축한 후, 배포 파이프라인의 소요 시간이 **평균 1분 10초(70초)** 대에 머무르는 것을 확인했습니다. 
 

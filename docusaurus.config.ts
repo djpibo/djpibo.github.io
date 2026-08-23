@@ -25,10 +25,10 @@ const config: Config = {
   projectName: 'djpibo.github.io',
   trailingSlash: false,
 
-  onBrokenLinks: 'warn',
+  onBrokenLinks: 'throw',
   markdown: {
     hooks: {
-      onBrokenMarkdownLinks: 'warn',
+      onBrokenMarkdownLinks: 'throw',
     },
   },
 
@@ -52,9 +52,9 @@ const config: Config = {
             xslt: true,
           },
           editUrl: 'https://github.com/djpibo/djpibo.github.io/tree/main/',
-          onInlineTags: 'warn',
-          onInlineAuthors: 'warn',
-          onUntruncatedBlogPosts: 'warn',
+          onInlineTags: 'throw',
+          onInlineAuthors: 'throw',
+          onUntruncatedBlogPosts: 'throw',
         },
         theme: {
           customCss: './src/css/custom.css',

@@ -36,7 +36,6 @@ jobs:
             .yarn/cache
             node_modules
             .docusaurus
-            node_modules/.cache/webpack
           key: ${{ runner.os }}-docusaurus-ultimate-${{ hashFiles('yarn.lock', 'docusaurus.config.ts') }}-${{ github.sha }}
           restore-keys: |
             ${{ runner.os }}-docusaurus-ultimate-${{ hashFiles('yarn.lock', 'docusaurus.config.ts') }}-

@@ -1,13 +1,8 @@
 ---
-slug: data buffer cache, lru wait event
+id: data-buffer-cache-lru-wait-event
 title: "배치 지연 현상의 원인을 분석하기 위해 오라클 내부 메모리 구조 분석"
-date: 2026-08-24
-authors:
-  - name: Dongju Lee
-    title: Oracle DBA
-    url: https://github.com/djpibo
-    image_url: https://github.com/djpibo.png
-tags: [data buffer cache, lru wait event, oracle internal, SGA, performance tuning]
+sidebar_label: Data Buffer Cache & LRU Wait Event
+sidebar_position: 2
 ---
 
 "배치 지연 사태"

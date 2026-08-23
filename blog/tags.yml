@@ -1,19 +1,44 @@
-facebook:
-  label: Facebook
-  permalink: /facebook
-  description: Facebook tag description
+ci-cd:
+  label: CI/CD
+  permalink: /ci-cd
+  description: CI/CD 파이프라인 및 배포 자동화
 
-hello:
-  label: Hello
-  permalink: /hello
-  description: Hello tag description
+yarn-v4:
+  label: Yarn v4
+  permalink: /yarn-v4
+  description: Yarn Berry(v4) 패키지 매니저 관련
+
+rspack:
+  label: Rspack
+  permalink: /rspack
+  description: Rust 기반 번들러 Rspack 관련
 
 docusaurus:
   label: Docusaurus
   permalink: /docusaurus
-  description: Docusaurus tag description
+  description: Docusaurus 정적 사이트 생성기 관련
 
-hola:
-  label: Hola
-  permalink: /hola
-  description: Hola tag description
+github-actions:
+  label: GitHub Actions
+  permalink: /github-actions
+  description: GitHub Actions 워크플로우 관련
+
+optimization:
+  label: Optimization
+  permalink: /optimization
+  description: 성능 최적화 및 튜닝
+
+troubleshooting:
+  label: TroubleShooting
+  permalink: /troubleshooting
+  description: 문제 해결 및 트러블슈팅
+
+회사생활:
+  label: 회사생활
+  permalink: /회사생활
+  description: 회사생활 및 커리어 관련
+
+life:
+  label: Life
+  permalink: /life
+  description: 일상 및 생활 관련
