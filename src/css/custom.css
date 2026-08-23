@@ -1,30 +1,131 @@
 /**
- * Any CSS included here will be global. The classic template
- * bundles Infima by default. Infima is a CSS framework designed to
- * work well for content-centric websites.
+ * Google Developers Blog inspired Theme CSS
  */
 
-/* You can override the default Infima variables here. */
+@import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
 :root {
-  --ifm-color-primary: #2e8555;
-  --ifm-color-primary-dark: #29784c;
-  --ifm-color-primary-darker: #277148;
-  --ifm-color-primary-darkest: #205d3b;
-  --ifm-color-primary-light: #33925d;
-  --ifm-color-primary-lighter: #359962;
-  --ifm-color-primary-lightest: #3cad6e;
-  --ifm-code-font-size: 95%;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+  --ifm-font-family-base: 'Google Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --ifm-font-family-monospace: 'JetBrains Mono', SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  
+  /* Google Palette */
+  --google-blue: #1a73e8;
+  --google-blue-hover: #1557b0;
+  --google-red: #ea4335;
+  --google-yellow: #fbbc04;
+  --google-green: #34a853;
+  --google-grey-50: #f8f9fa;
+  --google-grey-100: #f1f3f4;
+  --google-grey-200: #e8eaed;
+  --google-grey-300: #dadce0;
+  --google-grey-700: #5f6368;
+  --google-grey-800: #3c4043;
+  --google-grey-900: #202124;
+
+  /* Theme tokens - Light */
+  --ifm-color-primary: #1a73e8;
+  --ifm-color-primary-dark: #1765cc;
+  --ifm-color-primary-darker: #155fb8;
+  --ifm-color-primary-darkest: #114e96;
+  --ifm-color-primary-light: #3884ec;
+  --ifm-color-primary-lighter: #4c8fee;
+  --ifm-color-primary-lightest: #7cb2f4;
+
+  --ifm-background-color: #ffffff;
+  --ifm-background-surface-color: #f8f9fa;
+  --g-surface-card: #ffffff;
+  --g-surface-subtle: #f1f3f4;
+  --g-border-color: #e8eaed;
+  --g-text-primary: #202124;
+  --g-text-secondary: #5f6368;
+  --g-chip-bg: #f1f3f4;
+  --g-chip-text: #3c4043;
+  --g-chip-active-bg: #e8f0fe;
+  --g-chip-active-text: #1a73e8;
+  --g-card-shadow: 0 1px 3px 0 rgba(60, 64, 67, 0.3), 0 4px 8px 3px rgba(60, 64, 67, 0.15);
+  --g-card-hover-shadow: 0 4px 12px 0 rgba(60, 64, 67, 0.2), 0 8px 24px 6px rgba(60, 64, 67, 0.12);
+
+  --ifm-heading-font-weight: 700;
+  --ifm-heading-color: var(--g-text-primary);
+  --ifm-navbar-background-color: rgba(255, 255, 255, 0.92);
+  --ifm-navbar-shadow: 0 1px 2px 0 rgba(60, 64, 67, 0.08);
+  --ifm-code-font-size: 92%;
+  --docusaurus-highlighted-code-line-bg: rgba(26, 115, 232, 0.08);
 }
 
-/* For readability concerns, you should choose a lighter palette in dark mode. */
+/* Dark Mode - Google Dark Surface Palette */
 [data-theme='dark'] {
-  --ifm-color-primary: #25c2a0;
-  --ifm-color-primary-dark: #21af90;
-  --ifm-color-primary-darker: #1fa588;
-  --ifm-color-primary-darkest: #1a8870;
-  --ifm-color-primary-light: #29d5b0;
-  --ifm-color-primary-lighter: #32d8b4;
-  --ifm-color-primary-lightest: #4fddbf;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+  --ifm-color-primary: #8ab4f8;
+  --ifm-color-primary-dark: #669df6;
+  --ifm-color-primary-darker: #5492f5;
+  --ifm-color-primary-darkest: #1f6fed;
+  --ifm-color-primary-light: #aecbfa;
+  --ifm-color-primary-lighter: #bfd6fb;
+  --ifm-color-primary-lightest: #d2e3fc;
+
+  --ifm-background-color: #121316;
+  --ifm-background-surface-color: #1a1c1e;
+  --g-surface-card: #1e2023;
+  --g-surface-subtle: #282a2d;
+  --g-border-color: #35383c;
+  --g-text-primary: #e8eaed;
+  --g-text-secondary: #9aa0a6;
+  --g-chip-bg: #282a2d;
+  --g-chip-text: #e8eaed;
+  --g-chip-active-bg: #29384d;
+  --g-chip-active-text: #8ab4f8;
+  --g-card-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.5), 0 4px 8px 3px rgba(0, 0, 0, 0.3);
+  --g-card-hover-shadow: 0 6px 16px 0 rgba(0, 0, 0, 0.6), 0 12px 28px 8px rgba(0, 0, 0, 0.4);
+
+  --ifm-heading-color: #f1f3f4;
+  --ifm-navbar-background-color: rgba(18, 19, 22, 0.92);
+  --ifm-navbar-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.4);
+  --docusaurus-highlighted-code-line-bg: rgba(138, 180, 248, 0.15);
+}
+
+/* Global Navigation Top Accent Line (Google 4 Colors) */
+.navbar {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--g-border-color);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.navbar::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #4285f4 0%, #ea4335 33%, #fbbc05 66%, #34a853 100%);
+}
+
+.navbar__brand {
+  font-weight: 700;
+  letter-spacing: -0.3px;
+}
+
+.navbar__link {
+  font-weight: 500;
+  font-size: 0.95rem;
+  transition: color 0.15s ease;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--ifm-background-color);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--g-border-color);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--google-grey-700);
 }
