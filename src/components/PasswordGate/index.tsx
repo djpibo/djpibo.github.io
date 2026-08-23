@@ -7,6 +7,7 @@ interface PasswordGateProps {
 }
 
 // 표준 SHA-256 함수
+// 사용법 : F12-console에서 crypto.subtle.digest('SHA-256', new TextEncoder().encode('원하는비밀번호(영어로)'.trim().normalize('NFC'))).then(b => console.log(Array.from(new Uint8Array(b)).map(x => x.toString(16).padStart(2, '0')).join('')));
 async function sha256(message: string): Promise<string> {
   const normalized = message.trim().normalize('NFC');
   const msgBuffer = new TextEncoder().encode(normalized);
