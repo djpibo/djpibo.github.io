@@ -1,4 +1,14 @@
-
+---
+slug: data buffer cache, lru wait event
+title: "배치 지연 현상의 원인을 분석하기 위해 오라클 내부 메모리 구조 분석"
+date: 2026-08-24
+authors:
+  - name: Dongju Lee
+    title: Oracle DBA
+    url: https://github.com/djpibo
+    image_url: https://github.com/djpibo.png
+tags: [data buffer cache, lru wait event, oracle internal, SGA, performance tuning]
+---
 
 "배치 지연 사태"
 신규로 수정된 배치가 기존보다 2배 이상 지연되는 일이 생기고야 말았다.
@@ -60,6 +70,7 @@ LRU 리스트에는 Hot End와 Cold End가 있고 cold 버퍼는 최근에 사�
 개념적으로는 하나의 LRU만 존재하지만, 데이터 동시성을 위해 데이터베이스는 실제로 여러 개의 LRU 리스트를 사용한다.
 LRU 리스트는 실제 버퍼가 저장되는 것이 아닌, 상태와 위치와 같은 메타데이터를 가지고 있는 '버퍼 헤더'가 저장된다는 사실에 유의해야 한다.
 
+```text
 +-----------------------------------------------------------------------------------------+
 |                             TOUCH-COUNT BASED LRU MAIN LIST                             |
 +-----------------------------------------------------------------------------------------+
@@ -75,7 +86,7 @@ LRU 리스트는 실제 버퍼가 저장되는 것이 아닌, 상태와 위치�
           | (Promoted when TCH >= 2)                 | (TCH <= 1)           |
           +------------------------------------------+                      v
                                                                    [Free Buffer Victim]
-
+```
 
 LRU, LRUW 리스트를 Working Set이라고 불리며 "메모리 공간에 대한 수명 관리"에 대한 목적이 있다고 하면 해시 체인은 "빠른 데이터 탐색"이라는데 목적이 있다.
 해시 체인은 블록 주소(DBA)를 해싱하여 데이터가 메모리의 어디에 있는지 빠르게 찾아내는 역할을 하는데 
@@ -119,6 +130,7 @@ LRU 리스트의 구조 변경이 발생할 때 Touch count에 따라 Hot과 Col
 위 이벤트는 LRU 리스트가 아닌 해시 체인에서 발생하는데 구조를 먼저 서술하겠다.
 일반적인 해시 테이블과 유사하게 bucket, entry로 구성된다.
 
+```text
 [ Hash Function ] : Inputs a Data Block Address (DBA) and returns a bucket number between 0 and N.
 
 [ Hash Bucket Array ]       [ Hash Chain (Doubly Linked List of Buffer Headers) ]
@@ -134,6 +146,7 @@ LRU 리스트의 구조 변경이 발생할 때 Touch count에 따라 Hot과 Col
 ├─────────────┤             ┌─────────────────┐    ┌─────────────────┐
 │ Bucket #100 │ ── Pointer ─▶│ Buffer Header C  ◀▶ │ Buffer Header D 
 └─────────────┘             └─────────────────┘    └─────────────────┘
+```
 
 해시 체인에 새로 할당되는 경우, LRU 리스트에 프리 버퍼를 할당받고 난 뒤에 블록 헤더에 있는 DBA 주소를 해시함수를 통해 나온 값에 따라 entry에 배정된다.
 반대로 이미 해시 체인에 원하는 블록에 대한 버퍼 헤더가 버킷에 존재하는 경우에는 LRU 리스트 스캔은 스킵한다.

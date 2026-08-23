@@ -1,36 +1,8 @@
 import React, { ReactNode } from 'react';
-import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import Layout from '@theme/Layout';
-import Heading from '@theme/Heading';
-import styles from './index.module.css';
 
-function HomepageHeader() {
-  const { siteConfig } = useDocusaurusContext();
-  return (
-    <header className={clsx('hero hero--dark', styles.heroBanner)} style={{ padding: '4.5rem 0 2rem 0', textAlign: 'center' }}>
-      <div className="container">
-        <Heading as="h1" className="hero__title" style={{ fontSize: '3rem', fontWeight: 800 }}>
-          {siteConfig.title}
-        </Heading>
-        <p className="hero__subtitle" style={{ color: '#94a3b8', fontSize: '1.25rem', marginTop: '1rem' }}>
-          Enterprise Oracle DBA, Distributed Architecture & AI Agent
-        </p>
-        <div style={{ marginTop: '2rem', display: 'flex', gap: '1rem', justifyContent: 'center' }}>
-          <Link className="button button--primary button--lg" to="/docs/intro">
-            Architecture Docs ➔
-          </Link>
-          <Link className="button button--secondary button--lg" to="/blog">
-            RCA Incident Reports
-          </Link>
-        </div>
-      </div>
-    </header>
-  );
-}
-
-// 2. 메인 페이지에 띄울 4가지 핵심 카테고리 데이터
 const CategoryCards = [
   {
     title: '🗄️ DBMS Core Internals',
@@ -53,7 +25,7 @@ const CategoryCards = [
   {
     title: '⚡ DevOps & CI/CD Tuning',
     desc: 'GitHub Actions 파이프라인, Yarn v4 Zero-install, Rust 기반 빌드 환경(Rspack) 극한의 최적화.',
-    link: '/blog/build-optimization',
+    link: '/blog/docusaurus-build-optimization',
     badge: 'Performance',
   },
 ];
@@ -65,31 +37,27 @@ export default function Home(): ReactNode {
       title={siteConfig.title}
       description="Oracle DBA & AI Architecture Archive">
       
-      {/* 상단 타이틀 헤더 */}
-      <HomepageHeader />
-      
-      <main style={{ padding: '1rem 1rem 4rem 1rem', maxWidth: '1100px', margin: '0 auto' }}>
-
-        {/* 2x2 카테고리 네비게이션 카드 */}
-        <div className="container" style={{ marginTop: '3rem' }}>
+      <main style={{ padding: '3.5rem 1rem 4rem 1rem', maxWidth: '1100px', margin: '0 auto' }}>
+        <div className="container">
           <div className="row">
             {CategoryCards.map((card, idx) => (
-              <div key={idx} className="col col--6" style={{ marginBottom: '1.5rem' }}>
+              <div key={idx} className="col col--6" style={{ marginBottom: '1.8rem' }}>
                 <div style={{
-                  padding: '1.8rem',
-                  borderRadius: '12px',
+                  padding: '2rem',
+                  borderRadius: '14px',
                   border: '1px solid #334155',
                   height: '100%',
                   background: '#1e293b',
                   display: 'flex',
                   flexDirection: 'column',
                   justifyContent: 'space-between',
+                  boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)'
                 }}>
                   <div>
                     <span style={{
                       fontSize: '0.75rem',
-                      padding: '3px 8px',
-                      borderRadius: '4px',
+                      padding: '4px 9px',
+                      borderRadius: '6px',
                       background: '#0f172a',
                       color: '#38bdf8',
                       border: '1px solid #1e40af',
@@ -97,14 +65,22 @@ export default function Home(): ReactNode {
                     }}>
                       {card.badge}
                     </span>
-                    <h3 style={{ fontSize: '1.2rem', margin: '1rem 0 0.5rem 0', color: '#f8fafc' }}>
+                    <h3 style={{ fontSize: '1.25rem', margin: '1.2rem 0 0.6rem 0', color: '#f8fafc' }}>
                       {card.title}
                     </h3>
-                    <p style={{ color: '#94a3b8', fontSize: '0.9rem', lineHeight: '1.6' }}>
+                    <p style={{ color: '#94a3b8', fontSize: '0.92rem', lineHeight: '1.6' }}>
                       {card.desc}
                     </p>
                   </div>
-                  <Link to={card.link} style={{ fontWeight: 600, color: '#38bdf8', marginTop: '1rem' }}>
+                  <Link 
+                    to={card.link} 
+                    style={{ 
+                      fontWeight: 600, 
+                      color: '#38bdf8', 
+                      marginTop: '1.2rem',
+                      display: 'inline-flex',
+                      alignItems: 'center'
+                    }}>
                     바로가기 →
                   </Link>
                 </div>
@@ -112,7 +88,6 @@ export default function Home(): ReactNode {
             ))}
           </div>
         </div>
-
       </main>
     </Layout>
   );
