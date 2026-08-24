@@ -37,6 +37,8 @@
   letter-spacing: -0.02em;
   color: var(--g-text-primary);
   margin-bottom: 0.75rem;
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
 
 .heroSubtitle {
@@ -45,6 +47,8 @@
   max-width: 780px;
   line-height: 1.6;
   margin-bottom: 0;
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
 
 /* Featured Section (Split Hero Layout) */
@@ -119,6 +123,8 @@
   color: var(--g-text-primary);
   margin-bottom: 0.75rem;
   letter-spacing: -0.01em;
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
 
 .primaryCardDesc {
@@ -126,6 +132,8 @@
   font-size: 0.95rem;
   line-height: 1.6;
   margin-bottom: 1.5rem;
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
 
 /* Secondary Picks (Right Column) */
@@ -184,6 +192,17 @@
   line-height: 1.4;
   color: var(--g-text-primary);
   margin-bottom: 0.5rem;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+.secondaryDesc {
+  font-size: 0.85rem;
+  color: var(--g-text-secondary);
+  margin: 0;
+  line-height: 1.5;
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
 
 /* Filter Chips Bar */
@@ -310,6 +329,8 @@
   line-height: 1.4;
   color: var(--g-text-primary);
   margin-bottom: 0.6rem;
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
 
 .cardDesc {
@@ -321,6 +342,8 @@
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
 
 /* Meta Footer */
@@ -380,6 +403,8 @@
   font-weight: 700;
   color: var(--g-text-primary);
   margin-bottom: 0.6rem;
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
 
 .newsletterDesc {
@@ -388,6 +413,8 @@
   max-width: 600px;
   margin: 0 auto 1.75rem auto;
   line-height: 1.6;
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
 
 .newsletterActions {

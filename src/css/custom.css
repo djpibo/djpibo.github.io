@@ -50,6 +50,18 @@
        url('/fonts/maruburi/MaruBuri-Bold.ttf') format('truetype');
 }
 
+/* Global Korean Typography & Natural Word Wrap */
+html,
+body,
+h1, h2, h3, h4, h5, h6,
+p, span, a, li, blockquote,
+.markdown,
+.navbar__item,
+.footer {
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
 :root {
   --ifm-font-family-base: 'MaruBuri', 'Google Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   --ifm-heading-font-family: 'MaruBuri', 'Google Sans', 'Inter', sans-serif;

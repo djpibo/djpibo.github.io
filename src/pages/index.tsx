@@ -235,7 +235,7 @@ export default function Home(): ReactNode {
                 <div>
                   <div className={styles.secondaryTag}>{item.category}</div>
                   <h3 className={styles.secondaryTitle}>{item.title}</h3>
-                  <p style={{ fontSize: '0.85rem', color: 'var(--g-text-secondary)', margin: 0, lineHeight: '1.5' }}>
+                  <p className={styles.secondaryDesc}>
                     {item.desc}
                   </p>
                 </div>

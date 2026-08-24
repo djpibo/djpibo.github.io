@@ -5,7 +5,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 const config: Config = {
   title: 'deejay tech archive',
   tagline: 'save my trace - Oracle DBA, Architecture & AI Agent',
-  favicon: 'img/favicon.ico',
+  favicon: 'img/logo.svg',
 
   // @ts-ignore : 타입 정의 누락 무시 (실제로는 초고속 빌드 정상 작동)
   future: {

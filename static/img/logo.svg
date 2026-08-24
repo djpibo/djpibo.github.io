@@ -1,7 +1,17 @@
 <svg width="200" height="200" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect width="200" height="200" rx="44" fill="#1A73E8"/>
-  <path d="M54 70L88 100L54 130" stroke="white" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M100 134H146" stroke="#FBBC04" stroke-width="12" stroke-linecap="round"/>
-  <circle cx="132" cy="74" r="14" fill="#34A853"/>
-  <circle cx="152" cy="98" r="8" fill="#EA4335"/>
+  <!-- Modern Google Blue Container -->
+  <rect width="200" height="200" rx="46" fill="#1A73E8"/>
+  
+  <!-- Capital 'K' - Vertical Stem (Tech Pipeline / Cursor) -->
+  <path d="M58 48V152" stroke="white" stroke-width="16" stroke-linecap="round"/>
+  
+  <!-- Capital 'K' - Upper Arm (Terminal Prompt Branch) -->
+  <path d="M66 100L132 48" stroke="white" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  
+  <!-- Capital 'K' - Lower Leg (Google Yellow Accent) -->
+  <path d="M66 100L132 152" stroke="#FBBC04" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  
+  <!-- Tech Nodes (Google Green & Red Accent Dots) -->
+  <circle cx="154" cy="48" r="9" fill="#34A853"/>
+  <circle cx="154" cy="152" r="9" fill="#EA4335"/>
 </svg>
