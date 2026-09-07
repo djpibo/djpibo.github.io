@@ -40,7 +40,7 @@ const FEATURED_SECONDARY: ArticleItem[] = [
     category: 'Production RCA',
     categorySlug: 'case',
     badge: 'Production RCA',
-    title: '올영세일 회고 1편: 시간대별 CPU 높은 SQL 찾기 (Stat)',
+    title: '올영세일 회고 1편: 시간대별 CPU 높은 SQL 찾기',
     desc: '세일 기간 7천억 현금 흐름과 매장 현장 업무를 수호한 시간대별 CPU Top SQL 분석 및 튜닝.',
     link: '/docs/case/2026-1Q/oy-sale-stat-hourly-cpu-sql',
     date: '2026. 08. 15',
