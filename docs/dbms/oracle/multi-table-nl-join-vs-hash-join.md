@@ -33,7 +33,7 @@ NL 조인은 선행 집합에서 추출된 행 수만큼 후행 테이블을 반
 ```
 
 만약 각 테이블의 조인 조건이 복합 PK나 Unique 인덱스로 정교하게 물려 있다면 어떻게 될까?
-- 후행 테이블을 1회 탐색할 때 루트(Root) $\rightarrow$ 브랜치(Branch) $\rightarrow$ 리프(Leaf) $\rightarrow$ 테이블 행까지 읽는 블록 수는 **단 2~3개**에 불과하다.
+- 후행 테이블을 1회 탐색할 때 루트(Root) → 브랜치(Branch) → 리프(Leaf) → 테이블 행까지 읽는 블록 수는 **단 2~3개**에 불과하다.
 - 게다가 이 블록들은 빈번하게 참조되는 상위 노드이거나 방금 읽은 블록들이라 데이터 버퍼 캐시(Data Buffer Cache)에 캐싱되어 있을 확률이 매우 높다.
 - Starts가 100회 돌아도 전체 Buffer Gets는 200~300개 수준이며, 물리적 디스크 I/O 없이 메모리 상에서 수 밀리초 안에 조인이 끝난다.
 
@@ -67,25 +67,25 @@ NL 조인의 가장 강력한 특징은 **선행 테이블의 결과값이 후�
 ### 3.1. 인덱스 기반 NL 조인 플랜 (최적)
 
 ```sql
--------------------------------------------------------------------------------------------------------------------
-| Id  | Operation                                  | Name              | Starts | E-Rows | A-Rows | Buffers |
--------------------------------------------------------------------------------------------------------------------
-|   0 | SELECT STATEMENT                           |                   |      1 |        |     10 |     112 |
-|   1 |  NESTED LOOPS                              |                   |      1 |     10 |     10 |     112 |
-|   2 |   NESTED LOOPS                             |                   |      1 |     10 |     10 |      82 |
-|   3 |    NESTED LOOPS                            |                   |      1 |     10 |     10 |      52 |
-|   4 |     NESTED LOOPS                           |                   |      1 |     10 |     10 |      22 |
-|*  5 |      TABLE ACCESS BY INDEX ROWID BATCHED   | ORDERS            |      1 |     10 |     10 |       4 |
-|*  6 |       INDEX RANGE SCAN                     | ORDERS_IDX01      |      1 |     10 |     10 |       2 |
-|   7 |      TABLE ACCESS BY INDEX ROWID           | ORDER_DETAIL      |     10 |      1 |     10 |      18 |
-|*  8 |       INDEX UNIQUE SCAN                    | ORDER_DETAIL_PK   |     10 |      1 |     10 |      10 |
-|   9 |     TABLE ACCESS BY INDEX ROWID             | ITEM              |     10 |      1 |     10 |      30 |
-|* 10 |      INDEX UNIQUE SCAN                     | ITEM_PK           |     10 |      1 |     10 |      20 |
-|  11 |    TABLE ACCESS BY INDEX ROWID              | MEMBER            |     10 |      1 |     10 |      30 |
-|* 12 |     INDEX UNIQUE SCAN                      | MEMBER_PK         |     10 |      1 |     10 |      20 |
-|  13 |   TABLE ACCESS BY INDEX ROWID               | DELIVERY          |     10 |      1 |     10 |      30 |
-|* 14 |    INDEX UNIQUE SCAN                       | DELIVERY_PK       |     10 |      1 |     10 |      20 |
--------------------------------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------------------
+| Id  | Operation                     | Name            | Starts | A-Rows | Buffers |
+---------------------------------------------------------------------------------------
+|   0 | SELECT STATEMENT              |                 |      1 |     10 |     112 |
+|   1 |  NESTED LOOPS                 |                 |      1 |     10 |     112 |
+|   2 |   NESTED LOOPS                |                 |      1 |     10 |      82 |
+|   3 |    NESTED LOOPS               |                 |      1 |     10 |      52 |
+|   4 |     NESTED LOOPS              |                 |      1 |     10 |      22 |
+|*  5 |      TABLE ACCESS BY INDEX ROW| ORDERS          |      1 |     10 |       4 |
+|*  6 |       INDEX RANGE SCAN        | ORDERS_IDX01    |      1 |     10 |       2 |
+|   7 |      TABLE ACCESS BY INDEX ROW| ORDER_DETAIL    |     10 |     10 |      18 |
+|*  8 |       INDEX UNIQUE SCAN       | ORDER_DETAIL_PK |     10 |     10 |      10 |
+|   9 |     TABLE ACCESS BY INDEX ROW | ITEM            |     10 |     10 |      30 |
+|* 10 |      INDEX UNIQUE SCAN        | ITEM_PK         |     10 |     10 |      20 |
+|  11 |    TABLE ACCESS BY INDEX ROW  | MEMBER          |     10 |     10 |      30 |
+|* 12 |     INDEX UNIQUE SCAN         | MEMBER_PK       |     10 |     10 |      20 |
+|  13 |   TABLE ACCESS BY INDEX ROW   | DELIVERY        |     10 |     10 |      30 |
+|* 14 |    INDEX UNIQUE SCAN          | DELIVERY_PK     |     10 |     10 |      20 |
+---------------------------------------------------------------------------------------
 ```
 
 - 각 단계별 `Starts`는 10회씩 발생하지만, 후행 테이블 접근이 모두 `INDEX UNIQUE SCAN`으로 풀린다.
@@ -94,21 +94,21 @@ NL 조인의 가장 강력한 특징은 **선행 테이블의 결과값이 후�
 ### 3.2. 억지로 해시 조인을 유도한 플랜 (성능 저하)
 
 ```sql
--------------------------------------------------------------------------------------------------------------
-| Id  | Operation                    | Name         | Starts | E-Rows | A-Rows | Buffers | Used-Mem|
--------------------------------------------------------------------------------------------------------------
-|   0 | SELECT STATEMENT             |              |      1 |        |     10 |  384520 |         |
-|*  1 |  HASH JOIN                   |              |      1 |     10 |     10 |  384520 | 17M (0) |
-|   2 |   TABLE ACCESS FULL          | DELIVERY     |      1 |   800K |   800K |   42100 |         |
-|*  3 |   HASH JOIN                  |              |      1 |     10 |     10 |  342420 | 24M (0) |
-|   4 |    TABLE ACCESS FULL         | MEMBER       |      1 |   1.2M |   1.2M |   78500 |         |
-|*  5 |    HASH JOIN                 |              |      1 |     10 |     10 |  263920 | 30M (0) |
-|   6 |     TABLE ACCESS FULL        | ITEM         |      1 |   500K |   500K |   31200 |         |
-|*  7 |     HASH JOIN                |              |      1 |     10 |     10 |  232720 | 11M (0) |
-|*  8 |      TABLE ACCESS FULL       | ORDER_DETAIL |      1 |   3.5M |   3.5M |  232716 |         |
-|*  9 |      TABLE ACCESS BY INDEX   | ORDERS       |      1 |     10 |     10 |       4 |         |
-|* 10 |       INDEX RANGE SCAN       | ORDERS_IDX01 |      1 |     10 |     10 |       2 |         |
--------------------------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
+| Id  | Operation               | Name         | Starts | A-Rows |  Buffers |
+---------------------------------------------------------------------------------
+|   0 | SELECT STATEMENT        |              |      1 |     10 |  384,520 |
+|*  1 |  HASH JOIN              |              |      1 |     10 |  384,520 |
+|   2 |   TABLE ACCESS FULL     | DELIVERY     |      1 |   800K |   42,100 |
+|*  3 |   HASH JOIN             |              |      1 |     10 |  342,420 |
+|   4 |    TABLE ACCESS FULL    | MEMBER       |      1 |   1.2M |   78,500 |
+|*  5 |    HASH JOIN            |              |      1 |     10 |  263,920 |
+|   6 |     TABLE ACCESS FULL   | ITEM         |      1 |   500K |   31,200 |
+|*  7 |     HASH JOIN           |              |      1 |     10 |  232,720 |
+|*  8 |      TABLE ACCESS FULL  | ORDER_DETAIL |      1 |   3.5M |  232,716 |
+|*  9 |      TABLE ACCESS BY IDX| ORDERS       |      1 |     10 |        4 |
+|* 10 |       INDEX RANGE SCAN  | ORDERS_IDX01 |      1 |     10 |        2 |
+---------------------------------------------------------------------------------
 ```
 
 - 모든 단계의 `Starts`는 1회로 줄었다.
