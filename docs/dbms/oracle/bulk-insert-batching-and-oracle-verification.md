@@ -132,7 +132,7 @@ MyBatis 환경에서 대량 INSERT를 구현할 때 가장 흔히 시도하는 �
 
 이 방식의 구조적 한계:
 1. **바인드 변수 한도 초과**: 오라클의 최대 바인드 파라미터 개수는 65,535개다. 컬럼이 10개인 테이블이라면 6,500건을 넘기는 순간 `ORA-01745: invalid host/bind variable name` 에러가 발생한다.
-2. **하드 파싱 및 라이브러리 캐시 래치 경 발생**: 리스트 크기에 따라 매번 SQL 텍스트의 길이가 달라지고 바인드 변수 개수가 달라져 하드 파싱(Hard Parse)이 발생하며 Shared Pool 래치(`library cache: mutex X`)가 경합한다.
+2. **하드 파싱 및 라이브러리 캐시 래치 경합 발생**: 리스트 크기에 따라 매번 SQL 텍스트의 길이가 달라지고 바인드 변수 개수가 달라져 하드 파싱(Hard Parse)이 발생하며 Shared Pool 래치(`library cache: mutex X`)가 경합한다.
 
 MyBatis에서 오라클의 Native Batching을 활용하는 적합한 방법은 단건 INSERT XML 구문을 따로 작성해두고, `SqlSessionTemplate`을 `ExecutorType.BATCH` 모드로 실행하는 것이다.
 
@@ -180,9 +180,9 @@ dslContext.batchInsert(records).execute();
 
 ---
 
-### 2.6. 자바에서 모아서 커밋해도 건건이 커밋이 유발되는 3가지 실무 함정
+### 2.6. 자바에서 모아서 커밋해도 건건이 커밋이 유발될 수 있는 함정
 
-개발자가 자바 코드에서는 분명히 "루프가 끝난 뒤 모아서 1회 커밋"을 의도했음에도 불구하고, 실제 오라클 엔진 레벨에서는 건건이(또는 잦은 단위로) 커밋이 유발되는 경우가 있다. 이는 HikariCP, ojdbc 드라이버, 스프링 트랜잭션 프록시의 물리적 동작 특성에서 비롯된다.
+개발자가 자바 코드에서는 분명히 "루프가 끝난 뒤 모아서 1회 커밋"을 의도했음에도 불구하고, 실제 오라클 엔진 레벨에서는 건별로 커밋이 유발되는 경우가 있다. 이는 HikariCP, ojdbc 드라이버, 스프링 트랜잭션 프록시의 물리적 동작 특성에서 비롯된다.
 
 #### 1) HikariCP의 커넥션 반납 시 `setAutoCommit(true)` 강제 커밋 (JDBC 표준 스펙)
 JDBC 공식 명세(JavaDoc for `Connection.setAutoCommit`)에는 다음과 같은 규칙이 정의되어 있다:
@@ -190,12 +190,12 @@ JDBC 공식 명세(JavaDoc for `Connection.setAutoCommit`)에는 다음과 같�
 > (트랜잭션 진행 중 이 메서드가 호출되어 auto-commit 모드가 변경되면, 그 즉시 트랜잭션은 커밋된다.)
 
 - **내부 동작**: HikariCP의 기본 풀 설정은 `isAutoCommit: true`다. 스프링의 `@Transactional`이나 수동 트랜잭션(`con.setAutoCommit(false)`)으로 작업하던 도중 예외가 발생하거나, 개발자가 명시적인 `commit()`/`rollback()`을 빠뜨린 채 커넥션을 반납(`con.close()`)할 때 문제가 발생한다.
-- **결과**: HikariCP는 커넥션을 풀의 기본 상태로 되돌리기 위해 내부적으로 `connection.setAutoCommit(true)`를 호출한다. 이때 JDBC 드라이버는 JDBC 표준 스펙에 따라 **아직 커밋되지 않은 트랜잭션을 그 즉시 강제 COMMIT**하여 오라클로 날린다. 이로 인해 롤백되어야 할 미완료 데이터가 커밋되거나 의도치 않은 커밋 횟수 증가를 유발한다. (HikariCP 3.x 이상에서는 풀 반납 시 롤백을 선행하도록 방어 로직이 추가되었으나, 구버전이거나 커스텀 풀 제어 시 빈번히 발생하는 함정이다.)
+- **결과**: HikariCP는 커넥션을 풀의 기본 상태로 되돌리기 위해 내부적으로 `connection.setAutoCommit(true)`를 호출한다. 이때 JDBC 드라이버는 JDBC 표준 스펙에 따라 **아직 커밋되지 않은 트랜잭션을 그 즉시 강제 COMMIT**하여 오라클로 보낸다. 이로 인해 롤백되어야 할 데이터가 커밋되거나 의도치 않은 커밋 횟수 증가를 유발한다. (HikariCP 3.x 이상에서는 풀 반납 시 롤백을 선행하도록 방어 로직이 추가되었으나, 구버전이거나 커스텀 풀 제어 시 빈번히 발생할 수 있다.)
 
-#### 2) Oracle JDBC 드라이버(ojdbc)의 AutoCommit 상태 탈동기화(Desynchronization) 버그
+#### 2) Oracle JDBC 드라이버(ojdbc)의 AutoCommit 상태 Desynchronization 버그
 Oracle JDBC 드라이버의 특정 구버전(ojdbc6, ojdbc7, ojdbc8 12.1~12.2 초기 빌드 등)에서는 드라이버 내부 상태와 오라클 서버 C 커널 세션 간에 AutoCommit 플래그가 어긋나는 버그(MOS Doc ID 2038739.1 등)가 존재했다.
-- **발생 메커니즘**: 자바 코드에서 `setAutoCommit(false)`를 정상 호출했음에도, 드라이버 레벨의 Statement 캐싱(`oracle.jdbc.implicitStatementCacheSize`)을 사용하거나 ORA 에러 발생 후 복구되는 과정에서 드라이버의 트랜잭션 상태 추적 플래그가 오염된다.
-- **결과**: 드라이버는 autoCommit이 켜져 있는 것으로 잘못 판단하고, 매 `execute()` Call마다 오라클 Net8 프로토콜 패킷에 'Auto-Commit bit'(`kpoal8` 커밋 플래그)를 실어 보낸다. 자바 코드 상에서는 단 1회의 커밋도 호출하지 않았는데 오라클 엔진은 매 실행마다 1건씩 커밋을 수행하여 `log file sync`가 폭증한다. (최신 ojdbc8/ojdbc11 19.3 이상 패치셋에서는 해결된 상태다.)
+- **발생 메커니즘**: 자바 코드에서 `setAutoCommit(false)`를 정상 호출했음에도, 드라이버 레벨의 Statement 캐싱(`oracle.jdbc.implicitStatementCacheSize`)을 사용하거나 ORA 에러 발생 후 복구되는 과정에서 드라이버의 트랜잭션 상태 추적 플래그 변경이 발생한다.
+- **결과**: 드라이버는 autoCommit이 켜져 있는 것으로 잘못 판단하고, 매 `execute()` Call마다 오라클 Net8 프로토콜 패킷에 'Auto-Commit bit'(`kpoal8` 커밋 플래그)를 실어 보낸다. 자바 코드 상에서는 단 1회의 커밋도 호출하지 않았는데 오라클 엔진은 매 실행마다 1건씩 커밋을 수행하여 `log file sync`가 급격히 발생한다. (최신 ojdbc8/ojdbc11 19.3 이상 패치셋에서는 해결된 상태다.)
 
 #### 3) 스프링 트랜잭션 프록시 누락과 AOP Self-Invocation (가장 흔한 원인)
 프레임워크 레벨에서 개발자의 구조적 착각으로 인해 건건이 커밋이 발생하는 대표적인 두 가지 패턴이다:
@@ -204,12 +204,12 @@ Oracle JDBC 드라이버의 특정 구버전(ojdbc6, ojdbc7, ojdbc8 12.1~12.2 �
 
 ---
 
-## 3. 10046 Extended SQL Trace로 파헤치는 단건(r=1) vs 배치(r=1000) 물리적 차이
+## 3. 10046 Extended SQL Trace로 단건(r=1) vs 배치(r=1000) 확인하는 방법
 
-실제로 데이터가 어떻게 처리되고 있는지 오라클 엔진 수준에서 가장 확실하게 확인하는 방법은 **10046 Extended SQL Trace**를 확인하는 것이다.
+실제로 데이터가 어떻게 처리되고 있는지 오라클 DB 레벨에서 확인하는 방법으로 **10046 Extended SQL Trace**가 있다.
 
 ### 3.1. 10046 Trace의 개념 및 진단 레벨
-10046 이벤트는 오라클이 내부적으로 제공하는 확장 SQL 트레이스 이벤트다. 표준 SQL 트레이스(`SQL_TRACE=TRUE`)가 쿼리의 파싱, 실행, 페치 횟수와 CPU/I/O 총량만 기록하는 반면, 10046 이벤트는 **바인드 변수 실측값**과 **대기 이벤트(Wait Event)**를 마이크로초 단위로 기록한다.
+10046 이벤트는 오라클이 내부적으로 제공하는 확장 SQL 트레이스 이벤트다. 표준 SQL 트레이스(`SQL_TRACE=TRUE`)가 SQL Parsing, Fetch Executions와 CPU/I/O 총량만 기록하는 반면, 10046 이벤트는 **바인드 변수 실측값**과 **대기 이벤트(Wait Event)**를 마이크로초 단위로 기록한다.
 
 | 진단 레벨 | 수집 내용 | 용도 |
 | :--- | :--- | :--- |
@@ -222,7 +222,7 @@ Oracle JDBC 드라이버의 특정 구버전(ojdbc6, ojdbc7, ojdbc8 12.1~12.2 �
 
 #### 현재 세션에서 활성화 (단위 테스트 또는 테스트 쿼리)
 ```sql
--- 현대식 권장 방식 (DBMS_MONITOR 패키지)
+-- DBMS_MONITOR 패키지
 EXEC DBMS_MONITOR.SESSION_TRACE_ENABLE(waits => TRUE, binds => TRUE);
 
 -- 또는 전통적인 ALTER SESSION 방식 (Level 12)
@@ -251,6 +251,8 @@ WHERE program LIKE '%java%' OR module LIKE '%Order%';
 -- 2. 대상 세션(SID: 142, SERIAL#: 38192)에 10046 Trace (Level 12) 활성화
 EXEC DBMS_MONITOR.SESSION_TRACE_ENABLE(session_id => 142, serial_num => 38192, waits => TRUE, binds => TRUE);
 
+-- [배치 작업 실행]
+
 -- 3. 배치 작업 실행 확인 후 트레이스 비활성화
 EXEC DBMS_MONITOR.SESSION_TRACE_DISABLE(session_id => 142, serial_num => 38192);
 ```
@@ -265,22 +267,6 @@ EXEC DBMS_MONITOR.CLIENT_ID_TRACE_ENABLE(client_id => 'ORDER_BATCH_01', waits =>
 
 -- 또는 Service / Module / Action 단위로 추적
 EXEC DBMS_MONITOR.SERV_MOD_ACT_TRACE_ENABLE(service_name => 'APP_SVC', module_name => 'OrderBatchService', waits => TRUE, binds => TRUE);
-```
-
-##### 3) `ORADEBUG` 유틸리티 사용 (SYSDBA 전용)
-SYSDBA 권한이 있는 경우 오라클 프로세스 레벨에서 직접 10046 이벤트를 주입할 수 있다.
-
-```sql
--- 대상 세션의 오라클 SPID 또는 OS PID 지정
-ORADEBUG SETORAPID 142; -- 오라클 세션 SID 지정
--- 또는
-ORADEBUG SETOSPID 28419; -- OS 프로세스 ID(SPID) 지정
-
--- 10046 Level 12 활성화
-ORADEBUG EVENT 10046 TRACE NAME CONTEXT FOREVER, LEVEL 12;
-
--- 비활성화
-ORADEBUG EVENT 10046 TRACE NAME CONTEXT OFF;
 ```
 
 ---
@@ -318,20 +304,20 @@ tkprof /u01/app/oracle/diag/rdbms/orcl/orcl/trace/orcl_ora_28419.trc ./batch_rep
 
 ---
 
-#### HikariCP + Spring Batch 다중 스텝 환경: SID가 계속 변경될 때의 적용해야할 사항
+#### HikariCP + Spring Batch 멀티 스텝 환경: SID가 계속 변경될 때의 적용해야할 사항
 실제 Spring Batch 운영 환경에서는 청크(Chunk) 단위마다 트랜잭션이 열리고 닫히며 커넥션이 HikariCP 풀에 반납(Check-in)된 후 다시 할당(Check-out)된다.  
 단일 스레드 환경이라면 HikariCP의 LIFO(후입선출) 재대여 특성상 방금 반납한 커넥션(동일 SID)이 즉시 재할당될 수도 있지만, 다음과 같은 조건에서는 **물리 커넥션인 오라클 SID가 실행 도중 언제든 변경**될 수 있다:
 
-1. **멀티 스레드 스텝 / 파티셔닝**: 여러 스레드가 동시에 서로 다른 커넥션을 꺼내 병렬 처리하므로 SID가 세션 풀 전체로 분산된다.
+1. **멀티 스레드 / 파티셔닝**: 여러 스레드가 동시에 서로 다른 커넥션을 꺼내 병렬 처리하므로 SID가 세션 풀 전체로 분산된다.
 2. **공용 커넥션 풀 경합**: 웹 요청이나 타 비즈니스 로직과 커넥션 풀을 공유하는 경우, 청크 반납 직후 타 스레드가 해당 커넥션을 가로채면 다음 청크는 다른 SID를 할당받는다.
-3. **`maxLifetime` 만료**: 수천만 건을 처리하는 장시간 배치 도중 HikariCP 커넥션 최대 수명(기본 30분)이 만료되면 물리 커넥션이 재생성되며 SID가 교체된다.
+3. **`maxLifetime` 만료**: 수천만 건을 처리하는 장시간 배치 도중 HikariCP 커넥션 최대 수명이 만료되면 물리 커넥션이 재생성되며 SID가 교체된다.
 
-따라서 특정 SID 번호 하나만 믿고 `SESSION_TRACE_ENABLE(session_id => 142)`를 걸어두면, 작업이 다른 세션으로 넘어가는 순간 트레이스 로그가 누락된다. 실무에서는 다음 3가지 전략으로 대응한다.
+따라서 특정 SID 번호 하나만 믿고 `SESSION_TRACE_ENABLE(session_id => 142)`를 걸어두면, 작업이 다른 세션으로 넘어가는 순간 트레이스 로그가 누락된다. 이데 대해서는 다음 방식으로 대응해야 한다.
 
 ##### 1) `CLIENT_IDENTIFIER` 기반 트레이스와 `trcsess` 병합 (표준 권장)
 커넥션 풀이 어떤 물리 세션(SID)을 할당하든 상관없이, 애플리케이션 컨텍스트에서 오라클 식별자를 주입하고 해당 식별자 전체에 트레이스를 건다. 식별자를 주입하는 방법은 **`application.yml` 설정**과 **자바 코드(`StepExecutionListener`)** 둘 다 완벽하게 동작하며, 목적에 따라 선택할 수 있다.
 
-###### 방법 A: `application.yml` 설정 (무중단/코드 변경 없음)
+###### 방법 A: `application.yml` 설정
 자바 코드를 수정하거나 재빌드할 필요 없이, HikariCP가 물리 커넥션을 맺을 때 오라클 세션에 식별자를 즉시 등록하도록 설정한다.
 
 ```yaml
@@ -412,29 +398,17 @@ trcsess output=merged_batch.trc clientid=BATCH_ORDER_STEP *.trc
 tkprof merged_batch.trc ./batch_summary.txt sys=no
 ```
 
-##### 2) 검증 환경: HikariCP 커넥션 풀 크기를 1로 고정 (`max-pool-size: 1`)
-로컬이나 스테이징 환경에서 배치 배칭 메커니즘만 빠르게 검증할 때는 풀 크기를 강제로 1로 제한하여 물리 세션을 단일화하는 방법이 가장 직관적이다.
-
-```yaml
-spring:
-  datasource:
-    hikari:
-      maximum-pool-size: 1   # 풀 크기를 1로 고정하여 동일 SID 재사용 강제
-      connection-init-sql: "ALTER SESSION SET EVENTS '10046 trace name context forever, level 12'"
-```
-Spring Batch가 수십 개의 Step과 청크를 반복해도 단 1개의 물리 커넥션(동일 SID)만 재사용되므로 단 하나의 `.trc` 파일로 전체 흐름을 검증할 수 있다.
-
-##### 3) SID 무관: SQL_ID 기반 통계 추적 (`V$SQL`)
+##### 2) SID 무관: SQL_ID 기반 통계 추적 (`V$SQL`)
 트레이스 파일 접근 권한이 없거나 운영 환경이라면, 세션 번호(SID)를 추적할 필요 없이 대상 INSERT 구문의 `SQL_ID`를 확인한다.  
 HikariCP가 커넥션을 100번 갈아타며 실행했더라도, 오라클 라이브러리 캐시는 세션과 무관하게 동일 `SQL_ID`의 `EXECUTIONS`와 `ROWS_PROCESSED`를 누적 집계하므로 `rows_per_exec` 지표를 통해 배칭 여부를 즉시 검증할 수 있다.
 
 ---
 
-### 3.3. 원시 트레이스(Raw Trace) 라인 비교
+### 3.3. 트레이스 파일(Raw Trace) 라인 비교
 
 생성된 `.trc` 파일의 내부 텍스트 라인을 열어보면 단건 처리와 배치 처리의 차이가 명확하게 드러난다.
 
-#### 단건 처리 로그: 1만 건 반복 실행 (`r=1`)
+#### 단건 처리 로그 예시: 1만 건 반복 실행 (`r=1`)
 ```text
 -- 1번째 행 실행
 BINDS #140239120:
@@ -455,7 +429,7 @@ WAIT #140239120: nam='SQL*Net message from client' ela= 175 driver id=1413697536
 ... (동일한 블록이 10,000번 반복 기록됨) ...
 ```
 
-#### 배치 처리 로그: 1,000건 단위 Array Processing (`r=1000`)
+#### 배치 처리 로그 예시: 1,000건 단위 Array Processing (`r=1000`)
 ```text
 -- 1번째 배치 실행 (1,000건 바인드 배열 전송)
 BINDS #140239120:
@@ -697,7 +671,7 @@ ORDER BY commit_timestamp DESC;
 
 ---
 
-## 5. 실무 점검 체크리스트
+## 5. 최종 체크리스트
 
 대량 INSERT 작업을 설계하거나 성능 이슈를 분석할 때 다음 체크리스트를 순서대로 확인한다.
 
