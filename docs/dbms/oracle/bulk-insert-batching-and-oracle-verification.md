@@ -19,20 +19,38 @@ Spring Data JPA의 `saveAll()`, MyBatis의 `<foreach>` 또는 `ExecutorType.BATC
 
 ---
 
-## 1. 프레임워크별 동작 메커니즘과 내부 함정
+## 1. 스프링의 오라클 데이터 액세스 기술 스택 조망
 
-애플리케이션 개발자가 작성하는 메서드 호출과 JDBC 드라이버가 오라클 Net8 프로토콜을 통해 전송하는 물리적 패킷 사이에는 상당한 변환 계층이 존재한다.
+스프링(Spring) 생태계에서 오라클(Oracle) 데이터베이스에 접근하는 방식은 추상화 수준과 패러다임에 따라 크게 다음과 같이 구분된다. 실무에서는 단일 기술만 사용하기보다는, 일반 트랜잭션(OLTP)과 대량 배치(Batch)의 목적에 따라 기술을 조합하여 운용하는 편이다.
+
+| 계층 / 범주 | 기술 스택 | 주요 특징 및 실무 용도 |
+| :--- | :--- | :--- |
+| **ORM / 도메인 중심** | **Spring Data JPA** (Hibernate) | 엔티티 객체 중심 모델링, 자동 더티 체킹, 일반 웹/API OLTP 표준 |
+| | **Spring Data JDBC** | 영속성 컨텍스트(1차 캐시, 쓰기 지연) 없는 단순 객체-테이블 매핑 |
+| **SQL 매퍼 / Type-Safe** | **MyBatis** | XML 기반 동적 SQL 매핑, 레거시 시스템 및 복잡한 수동 튜닝 쿼리 |
+| | **jOOQ** | 자바 코드 기반 Type-Safe SQL 빌더, 오라클 특화 구문 및 금융/정산 쿼리 |
+| **저수준 / Core JDBC** | **Spring JdbcTemplate** | 스프링 표준 JDBC 래퍼, **대용량 배치 적재(Spring Batch)의 표준** |
+| | **Raw JDBC (Connection)** | 프레임워크 추상화 없는 순수 JDBC / OCI Direct Path 제어 |
+| **비동기 / 논블로킹** | **Spring Data R2DBC** | WebFlux 비동기 이벤트 시스템용 논블로킹 드라이버 (`oracle-r2dbc`) |
+
+---
+
+## 2. 기술별 Bulk Insert 처리 메커니즘과 내부 함정
+
+애플리케이션 개발자가 호출하는 메서드와 오라클 JDBC Thin 드라이버가 Net8 프로토콜을 통해 전송하는 물리적 패킷 사이에는 상당한 변환 계층이 존재한다.  
+각 기술이 대량 INSERT를 내부적으로 어떻게 처리하며, 어떤 지점에서 배칭이 무력화되는지 살펴본다.
 
 ```mermaid
 flowchart TD
     subgraph AppLayer["애플리케이션 계층"]
         A1["Spring Data JPA: saveAll(list)"]
-        A2["MyBatis: foreach / ExecutorType.BATCH"]
-        A3["JDBC: PreparedStatement.addBatch()"]
+        A2["Spring JdbcTemplate: batchUpdate()"]
+        A3["MyBatis: foreach / ExecutorType.BATCH"]
+        A4["jOOQ: batchInsert()"]
     end
 
     subgraph DriverLayer["Oracle JDBC Thin Driver"]
-        D1["단건 전송 (Single Execution Loop)"]
+        D1["단건 전송 루프 (Single Execution)"]
         D2["Array Processing (배열 바인딩 일괄 전송)"]
     end
 
@@ -41,17 +59,18 @@ flowchart TD
         E2["EXEC Call 10회 / r=1000 / Roundtrip 10회"]
     end
 
-    A1 -.->|"IDENTITY 매핑 시"| D1
-    A1 -.->|"SEQUENCE + batch_size"| D2
-    A2 -.->|"foreach 다중 구문"| D1
-    A2 -.->|"BATCH Executor"| D2
-    A3 --> D2
+    A1 -.->|"IDENTITY 매핑 시 (쓰기 지연 무력화)"| D1
+    A1 -.->|"SEQUENCE + batch_size 설정 시"| D2
+    A2 -->|"Native executeBatch 호출"| D2
+    A3 -.->|"foreach 다중 구문 (INSERT ALL)"| D1
+    A3 -.->|"BATCH ExecutorTemplate"| D2
+    A4 -->|"Native batchExecution"| D2
     D1 --> E1
     D2 --> E2
 ```
 
-### 1.1. Spring Data JPA: `GenerationType.IDENTITY`가 배칭을 무력화하는 원리
-Spring Data JPA의 `SimpleJpaRepository.saveAll()` 메서드를 열어보면 내부는 단순히 리스트를 순회하며 `save()`를 호출하는 루프로 구성되어 있다.
+### 2.1. Spring Data JPA: `saveAll()`의 구조와 IDENTITY 전략의 한계
+Spring Data JPA의 `SimpleJpaRepository.saveAll()` 메서드는 내부적으로 단순히 리스트를 순회하며 `save()`를 호출하는 루프로 구성되어 있다.
 
 ```java
 @Transactional
@@ -65,17 +84,44 @@ public <S extends T> List<S> saveAll(Iterable<S> entities) {
 }
 ```
 
-JPA의 배치 처리는 영속성 컨텍스트의 **쓰기 지연(Write-Behind)** 저장소에 INSERT 쿼리를 모아두었다가, 트랜잭션 커밋 직전 `flush()` 시점에 `hibernate.jdbc.batch_size` 설정에 맞춰 JDBC `executeBatch()`로 전달하는 원리로 동작한다.
+JPA의 배치 처리는 영속성 컨텍스트의 **쓰기 지연(Write-Behind)** 저장소에 INSERT 쿼리를 모아두었다가, 트랜잭션 커밋 직전 `flush()` 시점에 `hibernate.jdbc.batch_size` 설정에 맞춰 JDBC `executeBatch()`로 전달하는 구조다.
 
-여기서 가장 흔하게 발생하는 함정은 PK 채번 전략이다.
-- **`GenerationType.IDENTITY`**: Oracle 12c부터 지원하는 `GENERATED AS IDENTITY` 컬럼을 매핑한 경우, 엔티티가 영속(Persistent) 상태가 되려면 1차 캐시의 식별자(ID) 값이 반드시 필요하다. 하지만 IDENTITY 전략은 DB에 실제 INSERT를 실행하기 전까지 ID 값을 알 수 없다. 따라서 하이버네이트는 **쓰기 지연을 강제로 비활성화**하고, `persist()` 호출 시점에 즉시 단건 INSERT 쿼리를 DB로 전송한다. 결과적으로 `hibernate.jdbc.batch_size` 설정은 완전히 무시된다.
-- **`GenerationType.SEQUENCE`**: 오라클 시퀀스를 사용하면 DB에 INSERT를 던지기 전에 시퀀스 값을 먼저 조회해와 엔티티에 세팅할 수 있으므로 쓰기 지연 배칭이 정상 동작한다. 단, 시퀀스의 `allocationSize`와 하이버네이트 설정(`hibernate.id.new_generator_mappings`, `order_inserts=true`)을 일치시키지 않으면 시퀀스 채번을 위해 수만 번의 `SELECT ... NEXTVAL` 라운드트립이 선행되는 문제가 발생한다.
+여기서 오라클 환경에서 흔히 발생하는 함정은 PK 채번 전략이다:
+- **`GenerationType.IDENTITY`**: Oracle 12c부터 지원하는 `IDENTITY` 컬럼을 매핑한 경우, 엔티티가 영속(Persistent) 상태가 되려면 1차 캐시의 식별자(PK)가 즉시 필요하다. 하지만 IDENTITY 전략은 DB에 실제 INSERT를 실행하기 전까지 ID 값을 알 수 없다. 따라서 하이버네이트는 **쓰기 지연을 강제로 비활성화**하고, `persist()` 호출 시점에 즉시 단건 INSERT 쿼리를 DB로 날린다. 결과적으로 `hibernate.jdbc.batch_size` 설정을 아무리 크게 주어도 완전히 무시되고 1건씩 단건 전송된다.
+- **`GenerationType.SEQUENCE`**: 오라클 시퀀스를 사용하면 INSERT 실행 전에 시퀀스 값을 먼저 조회해 엔티티에 할당할 수 있으므로 쓰기 지연 배칭이 정상 동작한다. 단, 시퀀스의 `allocationSize`와 하이버네이트 설정(`order_inserts=true`, `batch_size=1000`)을 일치시키지 않으면 시퀀스 조회를 위해 수만 번의 `SELECT ... NEXTVAL` 라운드트립이 선행된다.
 
-### 1.2. MyBatis: `<foreach>` 다중 행 구문의 한계 vs `ExecutorType.BATCH`
-MyBatis 환경에서 대량 INSERT를 구현할 때 가장 흔히 시도하는 방식이 XML 동적 태그인 `<foreach>`다.
+---
 
-오라클은 MySQL과 달리 단일 구문 내 `INSERT INTO table VALUES (...), (...)` 형태의 다중 행 INSERT 문법을 지원하지 않는다(Oracle 23ai 이전 버전 기준).  
-따라서 XML 내에서 다음과 같은 편법 구문을 작성하는 경우가 많다.
+### 2.2. Spring JdbcTemplate: 가장 직관적이고 강력한 Native Array Processing
+Spring Batch를 비롯한 대용량 데이터 처리에서 JPA 대신 `JdbcTemplate`이 표준으로 권장되는 이유는 **추상화 계층 없이 JDBC의 네이티브 Array Processing을 직접 호출하기 때문**이다.
+
+```java
+jdbcTemplate.batchUpdate(
+    "INSERT INTO tb_order_item (item_id, item_name, price) VALUES (?, ?, ?)",
+    new BatchPreparedStatementSetter() {
+        @Override
+        public void setValues(PreparedStatement ps, int i) throws SQLException {
+            OrderItem item = items.get(i);
+            ps.setLong(1, item.getId());
+            ps.setString(2, item.getName());
+            ps.setBigDecimal(3, item.getPrice());
+        }
+        @Override
+        public int getBatchSize() {
+            return items.size();
+        }
+    }
+);
+```
+
+- **내부 메커니즘**: `JdbcTemplate.batchUpdate()`는 내부적으로 단일 `PreparedStatement`를 생성하고 루프를 돌며 바인드 파라미터를 메모리에 적재한 뒤, 지정된 배치 크기마다 `ps.executeBatch()`를 1회 호출한다.
+- **오라클 연동**: Oracle JDBC Thin Driver의 SDU(Session Data Unit) 버퍼에 2차원 바인드 배열이 패키징되어 한 번에 오라클 엔진으로 전송된다. 엔티티 상태 관리나 쓰기 지연 무력화 같은 부작용이 전혀 발생하지 않는다.
+
+---
+
+### 2.3. MyBatis: XML `<foreach>`의 물리적 한계 vs `ExecutorType.BATCH`
+MyBatis 환경에서 대량 INSERT를 구현할 때 가장 흔히 시도하는 방식이 XML 동적 태그인 `<foreach>`다.  
+오라클은 `INSERT INTO table VALUES (...), (...)` 멀티플 로우 구문을 지원하지 않으므로, 흔히 `INSERT ALL` 편법 구문을 사용한다.
 
 ```xml
 <!-- [비권장] INSERT ALL을 이용한 다중 행 생성 -->
@@ -89,14 +135,14 @@ MyBatis 환경에서 대량 INSERT를 구현할 때 가장 흔히 시도하는 �
 </insert>
 ```
 
-이 방식은 다음과 같은 물리적 한계를 가진다:
-1. **바인드 변수 한도 초과**: 오라클의 최대 바인드 파라미터 개수는 65,535개다. 컬럼이 10개인 테이블이라면 한 번에 6,500건 이상을 넣는 순간 `ORA-01745: invalid host/bind variable name` 또는 `ORA-01000` 에러가 발생한다.
-2. **라이브러리 캐시 래치 경합 및 하드 파싱**: 전달되는 리스트 크기에 따라 매번 SQL 텍스트의 길이가 달라지고 바인드 변수 개수가 달라진다. 이는 매번 새로운 SQL로 인식되어 하드 파싱(Hard Parse)을 유발하고, Shared Pool의 래치 경합(`library cache: mutex X`)을 초래한다.
+이 방식의 물리적 한계:
+1. **바인드 변수 한도 초과**: 오라클의 최대 바인드 파라미터 개수는 65,535개다. 컬럼이 10개인 테이블이라면 6,500건을 넘기는 순간 `ORA-01745: invalid host/bind variable name` 에러가 발생한다.
+2. **하드 파싱 및 라이브러리 캐시 래치 경합**: 리스트 크기에 따라 매번 SQL 텍스트의 길이가 달라지고 바인드 변수 개수가 달라져 하드 파싱(Hard Parse)이 발생하며 Shared Pool 래치(`library cache: mutex X`)가 경합한다.
 
 MyBatis에서 오라클의 네이티브 배칭을 활용하는 올바른 방법은 단건 INSERT XML 구문을 정의해두고, `SqlSessionTemplate`을 `ExecutorType.BATCH` 모드로 실행하는 것이다.
 
 ```java
-// 동일 Statement를 재사용하며 JDBC Array Batch로 전송하는 패턴
+// 동일 Statement를 재사용하며 JDBC Array Batch로 전송하는 정석 패턴
 SqlSession sqlSession = sqlSessionFactory.openSession(ExecutorType.BATCH, false);
 try {
     OrderMapper mapper = sqlSession.getMapper(OrderMapper.class);
@@ -113,27 +159,37 @@ try {
 }
 ```
 
-### 1.3. JDBC: PreparedStatement의 Native Array Processing
-JDBC 레벨의 `PreparedStatement.addBatch()`와 `executeBatch()`는 가장 직접적으로 오라클 드라이버의 **Array Processing** 기능을 호출한다.
+---
 
-동일한 SQL 텍스트를 단 1회 파싱한 뒤, 드라이버 메모리 버퍼에 바인드 변수 값들을 2차원 배열 형태로 채운다. 이후 `executeBatch()`가 호출되는 시점에 Net8 프로토콜의 SDU(Session Data Unit) 패킷에 바인드 배열을 압축 적재하여 전송하므로 네트워크 왕복 횟수를 획기적으로 줄인다.
+### 2.4. jOOQ: Type-Safe SQL 빌더 관점의 벌크 인서트
+jOOQ는 자바 코드로 SQL을 작성하므로 컴파일 타임 검증이 가능하며, 대량 적재 시 `batchInsert()` 메서드를 통해 네이티브 JDBC 배칭을 깔끔하게 지원한다.
 
-### 1.4. Commit 발생 단위: 트랜잭션 경계와 `log file sync`
-배치 작업의 속도를 결정짓는 또 하나의 축은 **커밋의 빈도**다.
+```java
+// jOOQ를 이용한 네이티브 Array Batch 실행
+dslContext.batchInsert(records).execute();
+```
 
-- **정상적인 트랜잭션 경계**: `@Transactional`이 전체 작업 외부에 선언되어 있거나, 수동 트랜잭션에서 루프가 끝난 뒤 1회 `commit()`을 호출하면, 10만 건의 INSERT가 단건으로 실행되었든 배치로 실행되었든 오라클 레벨의 `user commits`는 **단 1회**만 발생한다.
-- **루프 내부 Commit 또는 AutoCommit**: 루프 안에서 개별 메서드를 호출하면서 신규 트랜잭션(`REQUIRES_NEW`)이 열리거나, Connection이 `autoCommit(true)` 상태라면 매 INSERT마다 커밋이 발생한다.
-  - 오라클은 커밋 요청을 받는 즉시 LGWR(Log Writer)가 Redo Log Buffer의 내용을 디스크의 온라인 리두 로그 파일로 기록할 때까지 해당 세션을 대기시킨다.
+- **내부 메커니즘**: 전달된 `Record` 목록을 기반으로 단일 INSERT 템플릿 Statement를 생성하고, `executeBatch()`를 호출하여 오라클 Thin Driver의 Array Processing을 활성화한다.
+- **오라클 특화 최적화**: 대량 적재 시 오라클 Direct-Path Insert 힌트인 `/*+ APPEND */`나 대량 병합을 위한 `MERGE INTO` 구문을 타입 안전하게 조립할 수 있다는 점이 장점이다.
+
+---
+
+### 2.5. Commit 발생 단위와 `log file sync`
+배치 작업의 처리 속도를 결정짓는 또 하나의 핵심 축은 **Commit 발생 빈도**다.
+
+- **정상적인 트랜잭션 경계**: `@Transactional`이 전체 작업 외부에 선언되어 있거나 루프가 종료된 뒤 1회 커밋하면, 10만 건의 INSERT가 단건으로 쪼개져 전송되었든 배치로 전송되었든 오라클 엔진 레벨의 `user commits`는 **단 1회**만 발생한다.
+- **루프 내부 Commit 또는 AutoCommit**: 루프 안에서 개별 메서드를 호출하며 트랜잭션이 열리고 닫히거나 Connection이 `autoCommit(true)` 상태라면 매 INSERT마다 커밋이 발생한다.
+  - 오라클은 커밋 요청을 받는 즉시 LGWR(Log Writer)가 Redo Log Buffer의 변경 벡터를 디스크의 온라인 리두 로그 파일에 기록할 때까지 해당 세션을 대기시킨다.
   - 이 대기 이벤트가 바로 `log file sync`다.
   - 디스크 I/O 레이턴시가 1ms라고 가정할 때, 10만 번 커밋하면 순수 커밋 대기 시간만으로 100,000회 × 1ms = 약 100초가 소요된다.
 
 ---
 
-## 2. 10046 Extended SQL Trace로 파헤치는 단건(r=1) vs 배치(r=1000) 물리적 차이
+## 3. 10046 Extended SQL Trace로 파헤치는 단건(r=1) vs 배치(r=1000) 물리적 차이
 
 실제로 데이터가 어떻게 처리되고 있는지 오라클 엔진 수준에서 가장 확실하게 확인하는 방법은 **10046 Extended SQL Trace**를 확인하는 것이다.
 
-### 2.1. 10046 Trace의 개념 및 진단 레벨
+### 3.1. 10046 Trace의 개념 및 진단 레벨
 10046 이벤트는 오라클이 내부적으로 제공하는 확장 SQL 트레이스 이벤트다. 표준 SQL 트레이스(`SQL_TRACE=TRUE`)가 쿼리의 파싱, 실행, 페치 횟수와 CPU/I/O 총량만 기록하는 반면, 10046 이벤트는 **바인드 변수 실측값**과 **대기 이벤트(Wait Event)**를 마이크로초 단위로 기록한다.
 
 | 진단 레벨 | 수집 내용 | 용도 |
@@ -143,7 +199,7 @@ JDBC 레벨의 `PreparedStatement.addBatch()`와 `executeBatch()`는 가장 직�
 | **Level 8** | Level 1 + **대기 이벤트 (Wait Events 및 대기 시간)** | I/O 및 락 병목 분석 |
 | **Level 12** | Level 1 + Level 4 + Level 8 (바인드 변수 + 대기 이벤트 모두 수집) | **실무 표준 트레이스** |
 
-### 2.2. 트레이스 활성화 및 수집 방법
+### 3.2. 트레이스 활성화 및 수집 방법
 
 #### 현재 세션에서 활성화 (단위 테스트 또는 테스트 쿼리)
 ```sql
@@ -350,7 +406,7 @@ HikariCP가 커넥션을 100번 갈아타며 실행했더라도, 오라클 라�
 
 ---
 
-### 2.3. 원시 트레이스(Raw Trace) 라인 비교
+### 3.3. 원시 트레이스(Raw Trace) 라인 비교
 
 생성된 `.trc` 파일의 내부 텍스트 라인을 열어보면 단건 처리와 배치 처리의 차이가 명확하게 드러난다.
 
@@ -389,7 +445,7 @@ WAIT #140239120: nam='SQL*Net message from client' ela= 220 driver id=1413697536
 ... (1만 건 처리 시 EXEC 라인이 단 10번만 찍히고 종료) ...
 ```
 
-### 2.4. 내부 물리 동작의 본질적 차이
+### 3.4. 내부 물리 동작의 본질적 차이
 
 | 물리 지표 | 단건 처리 (`r=1`) | 배치 처리 (`r=1000`) | 동작 원리 차이 |
 | :--- | :--- | :--- | :--- |
@@ -405,7 +461,7 @@ WAIT #140239120: nam='SQL*Net message from client' ela= 220 driver id=1413697536
 
 ---
 
-### 2.5. Trace 로그로 확인하는 Commit 시점 (`XCTEND`)
+### 3.5. Trace 로그로 확인하는 Commit 시점 (`XCTEND`)
 
 10046 Trace 파일에서 트랜잭션의 종료(커밋 또는 롤백)는 `XCTEND` 마커로 기록된다.
 
@@ -434,9 +490,9 @@ XCTEND r=0, rd=0, shake=0, flag=2
 
 ---
 
-## 3. 테이블 단위로 실시간 및 과거 커밋 실측치를 검증하는 방법
+## 4. 테이블 단위로 실시간 및 과거 커밋 실측치를 검증하는 방법
 
-### 3.1. 실시간 검증 1: `V$SQL` (테이블 기준 `rows_per_exec`)
+### 4.1. 실시간 검증 1: `V$SQL` (테이블 기준 `rows_per_exec`)
 메모리(라이브러리 캐시)에 적재된 SQL 통계를 확인하여, 특정 테이블로 들어간 INSERT 구문이 1회 실행당 몇 행씩 처리되었는지를 확인한다.
 
 ```sql
@@ -464,7 +520,7 @@ ORDER BY last_active_time DESC;
 
 ---
 
-### 3.2. 실시간 검증 2: `V$SESSTAT` (세션 기준 `user commits` & Roundtrips)
+### 4.2. 실시간 검증 2: `V$SESSTAT` (세션 기준 `user commits` & Roundtrips)
 커밋이 1건마다 발생했는지, 트랜잭션 종료 시 1번만 발생했는지는 세션 통계에서 확인한다.
 
 ```sql
@@ -493,7 +549,7 @@ WHERE s.sid = :target_sid  -- 배치 수행 세션 SID
 
 ---
 
-### 3.3. 실시간 검증 3: `V$LOCKED_OBJECT` + `V$TRANSACTION` (실시간 Undo 증가량 추적)
+### 4.3. 실시간 검증 3: `V$LOCKED_OBJECT` + `V$TRANSACTION` (실시간 Undo 증가량 추적)
 배치 작업이 진행 중일 때 타깃 테이블에 걸린 트랜잭션의 누적 반영 레코드 수를 실시간으로 확인한다.
 
 ```sql
@@ -523,7 +579,7 @@ WHERE o.object_name = 'TB_ORDER_ITEM';
 
 ---
 
-### 3.4. 과거 이력 검증: `DBA_` 딕셔너리 뷰를 통한 사후 실측
+### 4.4. 과거 이력 검증: `DBA_` 딕셔너리 뷰를 통한 사후 실측
 
 이미 배치가 종료되어 인메모리 뷰(`V$SQL`, `V$SESSTAT`)에서 데이터가 밀려난 경우, AWR 딕셔너리와 플래시백 뷰를 통해 과거 시점의 동작을 역추적할 수 있다.
 
@@ -617,7 +673,7 @@ ORDER BY commit_timestamp DESC;
 
 ---
 
-## 4. 실무 점검 체크리스트
+## 5. 실무 점검 체크리스트
 
 대량 INSERT 작업을 설계하거나 성능 이슈를 분석할 때 다음 체크리스트를 순서대로 확인한다.
 
@@ -632,7 +688,7 @@ ORDER BY commit_timestamp DESC;
 
 ---
 
-## 5. 마치며
+## 6. 마치며
 
 애플리케이션 계층에서 리스트나 컬렉션을 넘기는 코드는 개발 편의성을 위한 추상화일 뿐, 데이터베이스 엔진 수준의 물리적 배칭을 보장하지 않는다.  
 특히 JPA의 `IDENTITY` 전략과 하이버네이트 쓰기 지연 메커니즘의 충돌, MyBatis XML `<foreach>`의 파싱 부하 등은 겉으로 드러나지 않는 대표적인 성능 저하 원인이다.
