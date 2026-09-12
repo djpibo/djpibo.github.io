@@ -188,6 +188,30 @@ dslContext.batchInsert(records).execute();
 
 ---
 
+### 2.6. 자바에서 모아서 커밋해도 건건이 커밋이 유발되는 3가지 실무 함정
+
+개발자가 자바 코드에서는 분명히 "루프가 끝난 뒤 모아서 1회 커밋"을 의도했음에도 불구하고, 실제 오라클 엔진 레벨에서는 건건이(또는 잦은 단위로) 커밋이 유발되는 경우가 있다. 이는 HikariCP, ojdbc 드라이버, 스프링 트랜잭션 프록시의 물리적 동작 특성에서 비롯된다.
+
+#### 1) HikariCP의 커넥션 반납 시 `setAutoCommit(true)` 강제 커밋 (JDBC 표준 스펙)
+JDBC 공식 명세(JavaDoc for `Connection.setAutoCommit`)에는 다음과 같은 규칙이 정의되어 있다:
+> *"If this method is called during a transaction and the auto-commit mode is changed, the transaction is committed."*  
+> (트랜잭션 진행 중 이 메서드가 호출되어 auto-commit 모드가 변경되면, 그 즉시 트랜잭션은 커밋된다.)
+
+- **내부 동작**: HikariCP의 기본 풀 설정은 `isAutoCommit: true`다. 스프링의 `@Transactional`이나 수동 트랜잭션(`con.setAutoCommit(false)`)으로 작업하던 도중 예외가 발생하거나, 개발자가 명시적인 `commit()`/`rollback()`을 빠뜨린 채 커넥션을 반납(`con.close()`)할 때 문제가 발생한다.
+- **결과**: HikariCP는 커넥션을 풀의 기본 상태로 되돌리기 위해 내부적으로 `connection.setAutoCommit(true)`를 호출한다. 이때 JDBC 드라이버는 JDBC 표준 스펙에 따라 **아직 커밋되지 않은 트랜잭션을 그 즉시 강제 COMMIT**하여 오라클로 날린다. 이로 인해 롤백되어야 할 미완료 데이터가 커밋되거나 의도치 않은 커밋 횟수 증가를 유발한다. (HikariCP 3.x 이상에서는 풀 반납 시 롤백을 선행하도록 방어 로직이 추가되었으나, 구버전이거나 커스텀 풀 제어 시 빈번히 발생하는 함정이다.)
+
+#### 2) Oracle JDBC 드라이버(ojdbc)의 AutoCommit 상태 탈동기화(Desynchronization) 버그
+Oracle JDBC 드라이버의 특정 구버전(ojdbc6, ojdbc7, ojdbc8 12.1~12.2 초기 빌드 등)에서는 드라이버 내부 상태와 오라클 서버 C 커널 세션 간에 AutoCommit 플래그가 어긋나는 버그(MOS Doc ID 2038739.1 등)가 존재했다.
+- **발생 메커니즘**: 자바 코드에서 `setAutoCommit(false)`를 정상 호출했음에도, 드라이버 레벨의 Statement 캐싱(`oracle.jdbc.implicitStatementCacheSize`)을 사용하거나 ORA 에러 발생 후 복구되는 과정에서 드라이버의 트랜잭션 상태 추적 플래그가 오염된다.
+- **결과**: 드라이버는 autoCommit이 켜져 있는 것으로 잘못 판단하고, 매 `execute()` Call마다 오라클 Net8 프로토콜 패킷에 'Auto-Commit bit'(`kpoal8` 커밋 플래그)를 실어 보낸다. 자바 코드 상에서는 단 1회의 커밋도 호출하지 않았는데 오라클 엔진은 매 실행마다 1건씩 커밋을 수행하여 `log file sync`가 폭증한다. (최신 ojdbc8/ojdbc11 19.3 이상 패치셋에서는 해결된 상태다.)
+
+#### 3) 스프링 트랜잭션 프록시 누락과 AOP Self-Invocation (가장 흔한 원인)
+프레임워크 레벨에서 개발자의 구조적 착각으로 인해 건건이 커밋이 발생하는 대표적인 두 가지 패턴이다:
+- **`SimpleJpaRepository.save()`의 자체 `@Transactional`**: Spring Data JPA의 기본 구현체인 `SimpleJpaRepository`는 클래스 레벨에 `@Transactional`이 기본으로 적용되어 있다. 만약 이를 호출하는 상위 서비스 메서드에 `@Transactional` 선언이 누락되어 있다면, 루프를 돌며 `repository.save()`를 호출할 때마다 매번 독립된 트랜잭션이 열리고 커밋된다. 10만 건 루프를 돌리면 정확히 10만 번의 Commit이 발생한다.
+- **AOP Self-Invocation (내부 메서드 호출)**: 동일한 `@Service` 클래스 내부에서 `this.processChunk()` 형태로 `@Transactional` 메서드를 호출하면 스프링 AOP 프록시를 거치지 않고 대상 객체가 직접 호출된다. 그 결과 `@Transactional`이 완전히 무시된 채 JDBC 기본 모드(Auto-Commit: true)로 실행되어 매 쿼리마다 즉시 커밋된다.
+
+---
+
 ## 3. 10046 Extended SQL Trace로 파헤치는 단건(r=1) vs 배치(r=1000) 물리적 차이
 
 실제로 데이터가 어떻게 처리되고 있는지 오라클 엔진 수준에서 가장 확실하게 확인하는 방법은 **10046 Extended SQL Trace**를 확인하는 것이다.
