@@ -243,6 +243,62 @@ tkprof /u01/app/oracle/diag/rdbms/orcl/orcl/trace/orcl_ora_28419.trc ./batch_rep
 
 ---
 
+#### HikariCP + Spring Batch 다중 스텝 환경: SID가 계속 변경될 때의 실무 대처법
+실제 Spring Batch 운영 환경에서는 청크(Chunk) 단위(`chunk-size: 1000`)마다 트랜잭션이 열리고 닫히며 커넥션이 HikariCP 풀에 반납(Check-in)된 후 다시 할당(Check-out)된다. 또한 Step이 변경되거나 멀티 스레드 파티셔닝(Partitioning)을 사용할 경우 **물리 커넥션인 오라클 SID가 청크와 스텝마다 계속해서 변경**된다.
+
+이런 환경에서 특정 SID 하나만 지정하여 트레이스를 걸면 작업이 다른 세션으로 넘어가는 순간 수집이 누락된다. 실무에서는 다음 3가지 전략으로 대응한다.
+
+##### 1) `CLIENT_IDENTIFIER` 기반 트레이스와 `trcsess` 병합 (권장)
+커넥션 풀이 어떤 물리 세션(SID)을 할당하든 상관없이, 애플리케이션 컨텍스트에서 오라클 식별자를 주입하고 해당 식별자 전체에 트레이스를 건다.
+
+- **Spring Batch StepListener에서 식별자 세팅**:
+```java
+@Override
+public void beforeStep(StepExecution stepExecution) {
+    jdbcTemplate.execute((ConnectionCallback<Void>) con -> {
+        con.setClientInfo("OCID_CLIENT_IDENTIFIER", "BATCH_ORDER_STEP");
+        return null;
+    });
+}
+```
+
+- **DBA 세션에서 식별자 트레이스 활성화**:
+```sql
+-- SID와 무관하게 해당 Client ID를 달고 들어오는 모든 세션을 10046 추적
+EXEC DBMS_MONITOR.CLIENT_ID_TRACE_ENABLE(client_id => 'BATCH_ORDER_STEP', waits => TRUE, binds => TRUE);
+
+-- 배치 종료 후 비활성화
+EXEC DBMS_MONITOR.CLIENT_ID_TRACE_DISABLE(client_id => 'BATCH_ORDER_STEP');
+```
+
+- **분산된 트레이스 파일 병합 (`trcsess`)**:  
+SID가 바뀌어 DB 서버의 서로 다른 `.trc` 파일들에 로그가 쪼개져 저장되더라도, 오라클 공식 유틸리티인 `trcsess`로 Client ID 기준 단일 파일로 병합할 수 있다.
+```bash
+# DB 서버 trace 디렉토리에서 실행
+trcsess output=merged_batch.trc clientid=BATCH_ORDER_STEP *.trc
+
+# 병합된 파일을 tkprof로 분석
+tkprof merged_batch.trc ./batch_summary.txt sys=no
+```
+
+##### 2) 검증 환경: HikariCP 커넥션 풀 크기를 1로 고정 (`max-pool-size: 1`)
+로컬이나 스테이징 환경에서 배치 배칭 메커니즘만 빠르게 검증할 때는 풀 크기를 강제로 1로 제한하여 물리 세션을 단일화하는 방법이 가장 직관적이다.
+
+```yaml
+spring:
+  datasource:
+    hikari:
+      maximum-pool-size: 1   # 풀 크기를 1로 고정하여 동일 SID 재사용 강제
+      connection-init-sql: "ALTER SESSION SET EVENTS '10046 trace name context forever, level 12'"
+```
+Spring Batch가 수십 개의 Step과 청크를 반복해도 단 1개의 물리 커넥션(동일 SID)만 재사용되므로 단 하나의 `.trc` 파일로 전체 흐름을 검증할 수 있다.
+
+##### 3) SID 무관: SQL_ID 기반 통계 추적 (`V$SQL`)
+트레이스 파일 접근 권한이 없거나 운영 환경이라면, 세션 번호(SID)를 추적할 필요 없이 대상 INSERT 구문의 `SQL_ID`를 확인한다.  
+HikariCP가 커넥션을 100번 갈아타며 실행했더라도, 오라클 라이브러리 캐시는 세션과 무관하게 동일 `SQL_ID`의 `EXECUTIONS`와 `ROWS_PROCESSED`를 누적 집계하므로 `rows_per_exec` 지표를 통해 배칭 여부를 즉시 검증할 수 있다.
+
+---
+
 ### 2.3. 원시 트레이스(Raw Trace) 라인 비교
 
 생성된 `.trc` 파일의 내부 텍스트 라인을 열어보면 단건 처리와 배치 처리의 차이가 명확하게 드러난다.
