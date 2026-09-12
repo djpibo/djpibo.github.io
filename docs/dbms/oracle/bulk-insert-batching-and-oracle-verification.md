@@ -1,18 +1,21 @@
 ---
-id: bulk-insert-batching-and-oracle-verification
-title: "Spring에서는 실제로 bulk insert 처리를 하는지? Oracle 트레이스 로그로 확인하는 방법"
-sidebar_label: Spring Bulk Insert & Oracle Trace
+id: bulk-insert-batching-and-oracle-tracing
+title: "JAVA에서 실제로 bulk insert 처리를 하는지에 대해 Oracle DB에서 직접 트레이싱하기"
+sidebar_label: Java Bulk Insert & Oracle Trace
 sidebar_position: 6
 date: "2026년 9월 12일"
 reading_time: "약 12분"
 ---
 
-# Spring에서는 실제로 bulk insert 처리를 하는지? Oracle 트레이스 로그로 확인하는 방법
+# JAVA에서 실제로 bulk insert 처리를 하는지에 대해 Oracle DB에서 직접 트레이싱하기
 
-대량 데이터를 데이터베이스에 적재하는 배치나 마이그레이션 작업을 구현할 때, 애플리케이션 코드에서는 보통 리스트나 컬렉션 단위로 데이터를 묶어서 넘긴다.  
+매장에서는 하루 종일 발생한 입고/판매/재고이동/환불 등의 재고 관련 거래들이 발생한다. 1400개의 매장에 대략 3만건 정도의 상품 sku에 대한 작업들이 발생하면 하루에 2천만건 가까이 되는 거래에 대한 장부를 기록하는 새벽 00시 배치가 있다.
+
+이러한 대량 데이터를 insert하는 step이 존재하는데, 애플리케이션 코드에서는 보통 리스트나 컬렉션 단위로 데이터를 묶어서 넘긴다.  
 Spring Data JPA의 `saveAll()`, MyBatis의 `<foreach>` 또는 `ExecutorType.BATCH`, JDBC의 `addBatch()`를 사용하면서 "DB 엔진에 일괄(Bulk)로 전달되어 한 번에 커밋될 것"이라고 기대하는 편이다.
 
 하지만 실제 오라클(Oracle) 데이터베이스의 세션 통계나 SQL 트레이스를 확인해보면 기대와 전혀 다른 현상이 빈번하게 확인된다.  
+
 10만 건의 데이터를 리스트로 넘겼음에도 오라클 엔진은 10만 번의 개별 INSERT Call을 처리하느라 네트워크 패킷을 10만 번 주고받거나, 심지어 행마다 개별 커밋(Commit)이 발생해 `log file sync` 대기 이벤트로 시스템 전체 I/O를 점유하기도 한다.
 
 애플리케이션 계층의 '배치 코드'와 오라클 DB 엔진 내부의 '물리적 실행' 사이에 왜 이러한 괴리가 발생하는지, 그리고 이를 10046 Extended Trace와 딕셔너리 뷰를 통해 테이블 단위로 검증하는 방법을 정리한다.
@@ -25,13 +28,13 @@ Spring Data JPA의 `saveAll()`, MyBatis의 `<foreach>` 또는 `ExecutorType.BATC
 
 | 계층 / 범주 | 기술 스택 | 주요 특징 및 실무 용도 |
 | :--- | :--- | :--- |
-| **ORM / 도메인 중심** | **Spring Data JPA** (Hibernate) | 엔티티 객체 중심 모델링, 자동 더티 체킹, 일반 웹/API OLTP 표준 |
+| **ORM / 도메인 중심** | **Spring Data JPA** (Hibernate) | 엔티티 객체 중심 모델링, Dirty Check, WEB/API OLTP 표준 |
 | | **Spring Data JDBC** | 영속성 컨텍스트(1차 캐시, 쓰기 지연) 없는 단순 객체-테이블 매핑 |
 | **SQL 매퍼 / Type-Safe** | **MyBatis** | XML 기반 동적 SQL 매핑, 레거시 시스템 및 복잡한 수동 튜닝 쿼리 |
 | | **jOOQ** | 자바 코드 기반 Type-Safe SQL 빌더, 오라클 특화 구문 및 금융/정산 쿼리 |
-| **저수준 / Core JDBC** | **Spring JdbcTemplate** | 스프링 표준 JDBC 래퍼, **대용량 배치 적재(Spring Batch)의 표준** |
-| | **Raw JDBC (Connection)** | 프레임워크 추상화 없는 순수 JDBC / OCI Direct Path 제어 |
-| **비동기 / 논블로킹** | **Spring Data R2DBC** | WebFlux 비동기 이벤트 시스템용 논블로킹 드라이버 (`oracle-r2dbc`) |
+| **Low Level / Core JDBC** | **Spring JdbcTemplate** | 스프링 표준 JDBC 래퍼, **대용량 배치 적재(Spring Batch)의 표준** |
+| | **Raw JDBC (Connection)** | 프레임워크 추상화 없는 순수 JDBC / OCI(Oracle Connection Interface) Direct Path 제어 |
+| **Async / Non-Blocking** | **Spring Data R2DBC** | WebFlux 비동기 이벤트 시스템용 Non-Blocking 드라이버 (`oracle-r2dbc`) |
 
 ---
 
@@ -86,14 +89,14 @@ public <S extends T> List<S> saveAll(Iterable<S> entities) {
 
 JPA의 배치 처리는 영속성 컨텍스트의 **쓰기 지연(Write-Behind)** 저장소에 INSERT 쿼리를 모아두었다가, 트랜잭션 커밋 직전 `flush()` 시점에 `hibernate.jdbc.batch_size` 설정에 맞춰 JDBC `executeBatch()`로 전달하는 구조다.
 
-여기서 오라클 환경에서 흔히 발생하는 함정은 PK 채번 전략이다:
+PK 채번 및 시퀀스가 포함될 경우 아래와 같은 함정이 발생한다:
 - **`GenerationType.IDENTITY`**: Oracle 12c부터 지원하는 `IDENTITY` 컬럼을 매핑한 경우, 엔티티가 영속(Persistent) 상태가 되려면 1차 캐시의 식별자(PK)가 즉시 필요하다. 하지만 IDENTITY 전략은 DB에 실제 INSERT를 실행하기 전까지 ID 값을 알 수 없다. 따라서 하이버네이트는 **쓰기 지연을 강제로 비활성화**하고, `persist()` 호출 시점에 즉시 단건 INSERT 쿼리를 DB로 날린다. 결과적으로 `hibernate.jdbc.batch_size` 설정을 아무리 크게 주어도 완전히 무시되고 1건씩 단건 전송된다.
 - **`GenerationType.SEQUENCE`**: 오라클 시퀀스를 사용하면 INSERT 실행 전에 시퀀스 값을 먼저 조회해 엔티티에 할당할 수 있으므로 쓰기 지연 배칭이 정상 동작한다. 단, 시퀀스의 `allocationSize`와 하이버네이트 설정(`order_inserts=true`, `batch_size=1000`)을 일치시키지 않으면 시퀀스 조회를 위해 수만 번의 `SELECT ... NEXTVAL` 라운드트립이 선행된다.
 
 ---
 
-### 2.2. Spring JdbcTemplate: 가장 직관적이고 강력한 Native Array Processing
-Spring Batch를 비롯한 대용량 데이터 처리에서 JPA 대신 `JdbcTemplate`이 표준으로 권장되는 이유는 **추상화 계층 없이 JDBC의 네이티브 Array Processing을 직접 호출하기 때문**이다.
+### 2.2. Spring JdbcTemplate: 가장 직관적인 Native Array Processing
+Spring Batch를 비롯한 대용량 데이터 처리에서 JPA 대신 `JdbcTemplate`이 표준으로 권장되는 이유는 **별도 추상화 레이어가 필요 없이 JDBC의 Native Array Processing을 직접 호출하기 때문**이다.
 
 ```java
 jdbcTemplate.batchUpdate(
@@ -114,17 +117,17 @@ jdbcTemplate.batchUpdate(
 );
 ```
 
-- **내부 메커니즘**: `JdbcTemplate.batchUpdate()`는 내부적으로 단일 `PreparedStatement`를 생성하고 루프를 돌며 바인드 파라미터를 메모리에 적재한 뒤, 지정된 배치 크기마다 `ps.executeBatch()`를 1회 호출한다.
-- **오라클 연동**: Oracle JDBC Thin Driver의 SDU(Session Data Unit) 버퍼에 2차원 바인드 배열이 패키징되어 한 번에 오라클 엔진으로 전송된다. 엔티티 상태 관리나 쓰기 지연 무력화 같은 부작용이 전혀 발생하지 않는다.
+- **내부 메커니즘**: `JdbcTemplate.batchUpdate()`는 내부적으로 단일 `PreparedStatement`를 생성하고 루프를 돌며 바인드 파라미터를 메모리에 적재한 뒤, 지정된 배치 크기마다 `ps.executeBatch()`를 단 1회 호출한다.
+- **오라클 연동**: Oracle JDBC Thin Driver의 SDU(Session Data Unit) 버퍼에 2차원 바인드 배열이 패키징되어 한 번에 오라클 서버로 전송된다. 엔티티 상태 관리나 쓰기 지연과 같은 부작용이 전혀 발생하지 않는다.
 
 ---
 
-### 2.3. MyBatis: XML `<foreach>`의 물리적 한계 vs `ExecutorType.BATCH`
+### 2.3. MyBatis: XML `<foreach>`의 구조적 한계 vs `ExecutorType.BATCH`
 MyBatis 환경에서 대량 INSERT를 구현할 때 가장 흔히 시도하는 방식이 XML 동적 태그인 `<foreach>`다.  
-오라클은 `INSERT INTO table VALUES (...), (...)` 멀티플 로우 구문을 지원하지 않으므로, 흔히 `INSERT ALL` 편법 구문을 사용한다.
+오라클은 `INSERT INTO table VALUES (...), (...)` 멀티플 로우 구문을 지원하지 않으므로, 흔히 `INSERT ALL` 과 같은 우회 구문을 사용한다.
 
 ```xml
-<!-- [비권장] INSERT ALL을 이용한 다중 행 생성 -->
+<!-- INSERT ALL을 이용한 다중 행 생성 -->
 <insert id="insertBulkOrders">
     INSERT ALL
     <foreach collection="list" item="item">
@@ -135,14 +138,14 @@ MyBatis 환경에서 대량 INSERT를 구현할 때 가장 흔히 시도하는 �
 </insert>
 ```
 
-이 방식의 물리적 한계:
+이 방식의 구조적 한계:
 1. **바인드 변수 한도 초과**: 오라클의 최대 바인드 파라미터 개수는 65,535개다. 컬럼이 10개인 테이블이라면 6,500건을 넘기는 순간 `ORA-01745: invalid host/bind variable name` 에러가 발생한다.
-2. **하드 파싱 및 라이브러리 캐시 래치 경합**: 리스트 크기에 따라 매번 SQL 텍스트의 길이가 달라지고 바인드 변수 개수가 달라져 하드 파싱(Hard Parse)이 발생하며 Shared Pool 래치(`library cache: mutex X`)가 경합한다.
+2. **하드 파싱 및 라이브러리 캐시 래치 경 발생**: 리스트 크기에 따라 매번 SQL 텍스트의 길이가 달라지고 바인드 변수 개수가 달라져 하드 파싱(Hard Parse)이 발생하며 Shared Pool 래치(`library cache: mutex X`)가 경합한다.
 
-MyBatis에서 오라클의 네이티브 배칭을 활용하는 올바른 방법은 단건 INSERT XML 구문을 정의해두고, `SqlSessionTemplate`을 `ExecutorType.BATCH` 모드로 실행하는 것이다.
+MyBatis에서 오라클의 Native Batching을 활용하는 적합한 방법은 단건 INSERT XML 구문을 따로 작성해두고, `SqlSessionTemplate`을 `ExecutorType.BATCH` 모드로 실행하는 것이다.
 
 ```java
-// 동일 Statement를 재사용하며 JDBC Array Batch로 전송하는 정석 패턴
+// 동일 Statement를 재사용하며 JDBC Array Batch로 전송하는 직접 구현 방식
 SqlSession sqlSession = sqlSessionFactory.openSession(ExecutorType.BATCH, false);
 try {
     OrderMapper mapper = sqlSession.getMapper(OrderMapper.class);
@@ -161,7 +164,7 @@ try {
 
 ---
 
-### 2.4. jOOQ: Type-Safe SQL 빌더 관점의 벌크 인서트
+### 2.4. jOOQ: Type-Safe SQL builder 관점의 bulk insert
 jOOQ는 자바 코드로 SQL을 작성하므로 컴파일 타임 검증이 가능하며, 대량 적재 시 `batchInsert()` 메서드를 통해 네이티브 JDBC 배칭을 깔끔하게 지원한다.
 
 ```java
@@ -170,7 +173,7 @@ dslContext.batchInsert(records).execute();
 ```
 
 - **내부 메커니즘**: 전달된 `Record` 목록을 기반으로 단일 INSERT 템플릿 Statement를 생성하고, `executeBatch()`를 호출하여 오라클 Thin Driver의 Array Processing을 활성화한다.
-- **오라클 특화 최적화**: 대량 적재 시 오라클 Direct-Path Insert 힌트인 `/*+ APPEND */`나 대량 병합을 위한 `MERGE INTO` 구문을 타입 안전하게 조립할 수 있다는 점이 장점이다.
+- **오라클 특화 최적화**: 대량 적재 시 오라클 Direct-Path Insert 힌트인 `/*+ APPEND */`(DB 관점에서는 부작용 있긴함)나 `MERGE INTO` 구문을 Type Safety하게 처리할 수 있다는 점이 장점이다.
 
 ---
 
@@ -178,10 +181,10 @@ dslContext.batchInsert(records).execute();
 배치 작업의 처리 속도를 결정짓는 또 하나의 핵심 축은 **Commit 발생 빈도**다.
 
 - **정상적인 트랜잭션 경계**: `@Transactional`이 전체 작업 외부에 선언되어 있거나 루프가 종료된 뒤 1회 커밋하면, 10만 건의 INSERT가 단건으로 쪼개져 전송되었든 배치로 전송되었든 오라클 엔진 레벨의 `user commits`는 **단 1회**만 발생한다.
-- **루프 내부 Commit 또는 AutoCommit**: 루프 안에서 개별 메서드를 호출하며 트랜잭션이 열리고 닫히거나 Connection이 `autoCommit(true)` 상태라면 매 INSERT마다 커밋이 발생한다.
+- **Loop 내부 Commit 또는 AutoCommit**: Loop 안에서 개별 메서드를 호출하며 트랜잭션이 열리고 닫히거나 Connection이 `autoCommit(true)` 상태라면 매 INSERT마다 커밋이 발생한다.
   - 오라클은 커밋 요청을 받는 즉시 LGWR(Log Writer)가 Redo Log Buffer의 변경 벡터를 디스크의 온라인 리두 로그 파일에 기록할 때까지 해당 세션을 대기시킨다.
-  - 이 대기 이벤트가 바로 `log file sync`다.
-  - 디스크 I/O 레이턴시가 1ms라고 가정할 때, 10만 번 커밋하면 순수 커밋 대기 시간만으로 100,000회 × 1ms = 약 100초가 소요된다.
+  - 이 대기 이벤트가 바로 `log file sync`다. 
+  - 디스크 I/O 레이턴시가 1ms라고 가정할 때, 10만 번 커밋하면 순수 커밋 대기 시간만으로 100,000회 × 1ms = 약 100초가 소요되는 비효율적인 현상이 발생하게 된다.
 
 ---
 
@@ -299,10 +302,15 @@ tkprof /u01/app/oracle/diag/rdbms/orcl/orcl/trace/orcl_ora_28419.trc ./batch_rep
 
 ---
 
-#### HikariCP + Spring Batch 다중 스텝 환경: SID가 계속 변경될 때의 실무 대처법
-실제 Spring Batch 운영 환경에서는 청크(Chunk) 단위(`chunk-size: 1000`)마다 트랜잭션이 열리고 닫히며 커넥션이 HikariCP 풀에 반납(Check-in)된 후 다시 할당(Check-out)된다. 또한 Step이 변경되거나 멀티 스레드 파티셔닝(Partitioning)을 사용할 경우 **물리 커넥션인 오라클 SID가 청크와 스텝마다 계속해서 변경**된다.
+#### HikariCP + Spring Batch 다중 스텝 환경: SID가 계속 변경될 때의 적용해야할 사항
+실제 Spring Batch 운영 환경에서는 청크(Chunk) 단위마다 트랜잭션이 열리고 닫히며 커넥션이 HikariCP 풀에 반납(Check-in)된 후 다시 할당(Check-out)된다.  
+단일 스레드 환경이라면 HikariCP의 LIFO(후입선출) 재대여 특성상 방금 반납한 커넥션(동일 SID)이 즉시 재할당될 수도 있지만, 다음과 같은 조건에서는 **물리 커넥션인 오라클 SID가 실행 도중 언제든 변경**될 수 있다:
 
-이런 환경에서 특정 SID 하나만 지정하여 트레이스를 걸면 작업이 다른 세션으로 넘어가는 순간 수집이 누락된다. 실무에서는 다음 3가지 전략으로 대응한다.
+1. **멀티 스레드 스텝 / 파티셔닝**: 여러 스레드가 동시에 서로 다른 커넥션을 꺼내 병렬 처리하므로 SID가 세션 풀 전체로 분산된다.
+2. **공용 커넥션 풀 경합**: 웹 요청이나 타 비즈니스 로직과 커넥션 풀을 공유하는 경우, 청크 반납 직후 타 스레드가 해당 커넥션을 가로채면 다음 청크는 다른 SID를 할당받는다.
+3. **`maxLifetime` 만료**: 수천만 건을 처리하는 장시간 배치 도중 HikariCP 커넥션 최대 수명(기본 30분)이 만료되면 물리 커넥션이 재생성되며 SID가 교체된다.
+
+따라서 특정 SID 번호 하나만 믿고 `SESSION_TRACE_ENABLE(session_id => 142)`를 걸어두면, 작업이 다른 세션으로 넘어가는 순간 트레이스 로그가 누락된다. 실무에서는 다음 3가지 전략으로 대응한다.
 
 ##### 1) `CLIENT_IDENTIFIER` 기반 트레이스와 `trcsess` 병합 (표준 권장)
 커넥션 풀이 어떤 물리 세션(SID)을 할당하든 상관없이, 애플리케이션 컨텍스트에서 오라클 식별자를 주입하고 해당 식별자 전체에 트레이스를 건다. 식별자를 주입하는 방법은 **`application.yml` 설정**과 **자바 코드(`StepExecutionListener`)** 둘 다 완벽하게 동작하며, 목적에 따라 선택할 수 있다.
