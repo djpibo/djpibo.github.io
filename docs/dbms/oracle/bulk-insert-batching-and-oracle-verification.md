@@ -1,5 +1,5 @@
 ---
-id: bulk-insert-batching-and-oracle-tracing
+id: bulk-insert-batching-and-oracle-verification
 title: "JAVA에서 실제로 bulk insert 처리를 하는지에 대해 Oracle DB에서 직접 트레이싱하기"
 sidebar_label: Java Bulk Insert & Oracle Trace
 sidebar_position: 6
