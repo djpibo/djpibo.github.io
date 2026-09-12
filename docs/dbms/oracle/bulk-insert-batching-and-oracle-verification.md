@@ -1,13 +1,13 @@
 ---
 id: bulk-insert-batching-and-oracle-verification
-title: "Bulk Insert의 착시: Spring JPA·MyBatis·JDBC는 실제로 어떻게 전송되며, Oracle에서 이를 어떻게 입증하는가"
-sidebar_label: Bulk Insert Batching & Verification
+title: "Spring에서는 실제로 bulk insert 처리를 하는지? Oracle 트레이스 로그로 확인하는 방법"
+sidebar_label: Spring Bulk Insert & Oracle Trace
 sidebar_position: 6
 date: "2026년 9월 12일"
 reading_time: "약 12분"
 ---
 
-# Bulk Insert의 착시: Spring JPA·MyBatis·JDBC는 실제로 어떻게 전송되며, Oracle에서 이를 어떻게 입증하는가
+# Spring에서는 실제로 bulk insert 처리를 하는지? Oracle 트레이스 로그로 확인하는 방법
 
 대량 데이터를 데이터베이스에 적재하는 배치나 마이그레이션 작업을 구현할 때, 애플리케이션 코드에서는 보통 리스트나 컬렉션 단위로 데이터를 묶어서 넘긴다.  
 Spring Data JPA의 `saveAll()`, MyBatis의 `<foreach>` 또는 `ExecutorType.BATCH`, JDBC의 `addBatch()`를 사용하면서 "DB 엔진에 일괄(Bulk)로 전달되어 한 번에 커밋될 것"이라고 기대하는 편이다.
@@ -161,26 +161,82 @@ EXEC DBMS_MONITOR.SESSION_TRACE_DISABLE();
 ALTER SESSION SET EVENTS '10046 trace name context off';
 ```
 
-#### 타깃 WAS 세션 추적 (세션 ID 기반)
-WAS 커넥션 풀의 특정 세션이나 백그라운드 배치 프로세스를 추적할 때는 `SID`와 `SERIAL#`를 지정한다.
+#### 타깃 WAS 세션(다른 세션) 추적 및 트레이스 활성화
+실무 환경에서는 개발자 본인의 SQL 클라이언트 세션보다, Spring WAS(HikariCP)나 배치 서버가 맺고 있는 **다른 세션**을 대상으로 10046 트레이스를 걸어야 하는 경우가 대부분이다. 오라클은 관리자(DBA) 세션에서 다른 활성 세션을 지정해 10046 트레이스를 켜고 끌 수 있는 메커니즘을 제공한다.
+
+##### 1) `DBMS_MONITOR` 패키지 사용 (표준 권장 방식)
+대상 애플리케이션 세션의 `SID`와 `SERIAL#`를 `V$SESSION`에서 조회한 뒤 원격으로 활성화한다.
 
 ```sql
--- V$SESSION에서 대상 배치 세션의 SID, SERIAL# 확인 후 활성화
+-- 1. 대상 배치 세션 확인 (예: 프로그램명이나 모듈명으로 탐색)
+SELECT sid, serial#, username, osuser, program, module, status
+FROM v$session
+WHERE program LIKE '%java%' OR module LIKE '%Order%';
+
+-- 2. 대상 세션(SID: 142, SERIAL#: 38192)에 10046 Trace (Level 12) 활성화
 EXEC DBMS_MONITOR.SESSION_TRACE_ENABLE(session_id => 142, serial_num => 38192, waits => TRUE, binds => TRUE);
 
--- 배치 종료 후 즉시 비활성화
+-- 3. 배치 작업 실행 확인 후 트레이스 비활성화
 EXEC DBMS_MONITOR.SESSION_TRACE_DISABLE(session_id => 142, serial_num => 38192);
 ```
 
-#### 생성된 트레이스 파일 경로 확인 및 tkprof 변환
-오라클 11g 이후부터는 `V$DIAG_INFO` 뷰를 통해 현재 세션의 트레이스 파일 물리 경로를 즉시 확인할 수 있다.
+##### 2) HikariCP 커넥션 풀 환경: 모듈 또는 클라이언트 식별자 단위 추적
+WAS의 커넥션 풀 환경에서는 작업이 어떤 세션(SID)으로 진입할지 사전에 특정하기 어려운 경우가 많다. 이 경우 세션 ID 대신 Spring에서 부여한 모듈명이나 클라이언트 식별자 단위로 트레이스를 걸 수 있다.
 
 ```sql
-SELECT value FROM v$diag_info WHERE name = 'Default Trace File';
-```
-출력 예시: `/u01/app/oracle/diag/rdbms/orcl/orcl/trace/orcl_ora_28419.trc`
+-- Spring 코드 또는 커넥션 초기화 시 client_identifier를 설정한 경우
+-- 예: connection.setClientInfo("OCID_CLIENT_IDENTIFIER", "ORDER_BATCH_01");
+EXEC DBMS_MONITOR.CLIENT_ID_TRACE_ENABLE(client_id => 'ORDER_BATCH_01', waits => TRUE, binds => TRUE);
 
-OS 셸에서 `tkprof` 유틸리티를 실행해 분석 가능한 텍스트 포맷으로 변환한다.
+-- 또는 Service / Module / Action 단위로 추적
+EXEC DBMS_MONITOR.SERV_MOD_ACT_TRACE_ENABLE(service_name => 'APP_SVC', module_name => 'OrderBatchService', waits => TRUE, binds => TRUE);
+```
+
+##### 3) `ORADEBUG` 유틸리티 사용 (SYSDBA 전용)
+SYSDBA 권한이 있는 경우 오라클 프로세스 레벨에서 직접 10046 이벤트를 주입할 수 있다.
+
+```sql
+-- 대상 세션의 오라클 SPID 또는 OS PID 지정
+ORADEBUG SETORAPID 142; -- 오라클 세션 SID 지정
+-- 또는
+ORADEBUG SETOSPID 28419; -- OS 프로세스 ID(SPID) 지정
+
+-- 10046 Level 12 활성화
+ORADEBUG EVENT 10046 TRACE NAME CONTEXT FOREVER, LEVEL 12;
+
+-- 비활성화
+ORADEBUG EVENT 10046 TRACE NAME CONTEXT OFF;
+```
+
+---
+
+#### 다른 세션의 트레이스 파일 물리 경로 확인 방법
+현재 세션에서는 `SELECT value FROM v$diag_info WHERE name = 'Default Trace File';` 구문으로 바로 경로를 찾을 수 있지만, **다른 세션의 트레이스 파일은 해당 뷰에 나오지 않는다.**
+
+트레이스 파일은 DB 서버(OS)의 백그라운드 Dedicated Server Process에 의해 기록되므로, `V$SESSION`과 `V$PROCESS`를 조인하여 **대상 세션의 서버 프로세스(`p.tracefile`)를 조회**해야 실제 파일 위치를 정확하게 찾아낼 수 있다.
+
+```sql
+SELECT 
+    s.sid,
+    s.serial#,
+    s.username,
+    s.program,
+    s.module,
+    p.spid AS os_pid,
+    p.tracefile AS target_trace_file
+FROM v$session s
+JOIN v$process p ON s.paddr = p.addr
+WHERE s.sid = :target_sid; -- 추적 대상 세션의 SID
+```
+
+출력 결과 예시:
+```text
+SID  SERIAL#  PROGRAM              OS_PID   TARGET_TRACE_FILE
+---  -------  -------------------  -------  -------------------------------------------------------------
+142    38192  JDBC Thin Client     28419    /u01/app/oracle/diag/rdbms/orcl/orcl/trace/orcl_ora_28419.trc
+```
+
+조회된 `TARGET_TRACE_FILE` 경로의 `.trc` 파일을 DB 서버 OS에서 열어보거나, `tkprof` 유틸리티를 실행해 분석한다.
 ```bash
 tkprof /u01/app/oracle/diag/rdbms/orcl/orcl/trace/orcl_ora_28419.trc ./batch_report.txt sys=no sort=prsela,exeela,fchela
 ```
