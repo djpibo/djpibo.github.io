@@ -44,32 +44,24 @@ Spring Data JPA의 `saveAll()`, MyBatis의 `<foreach>` 또는 `ExecutorType.BATC
 각 기술이 대량 INSERT를 내부적으로 어떻게 처리하며, 어떤 지점에서 배칭이 무력화되는지 살펴본다.
 
 ```mermaid
-flowchart TD
-    subgraph AppLayer["애플리케이션 계층"]
-        A1["Spring Data JPA: saveAll(list)"]
-        A2["Spring JdbcTemplate: batchUpdate()"]
-        A3["MyBatis: foreach / ExecutorType.BATCH"]
-        A4["jOOQ: batchInsert()"]
+flowchart TB
+    subgraph BAD["⚠️ 비효율: 단건 반복 전송 (Single Execution Loop)"]
+        direction TB
+        B_APP["애플리케이션 계층<br/>• Spring Data JPA: saveAll() + IDENTITY 채번<br/>• MyBatis: XML foreach 태그 (INSERT ALL)"]
+        B_DRV["Oracle JDBC Thin Driver<br/>단건 전송 루프 (매 건 개별 Statement 호출)"]
+        B_DB["Oracle 19c Database Engine<br/>• EXEC Call: 10,000회 (r=1)<br/>• SQL*Net Roundtrip: 10,000회 누적<br/>• 버퍼 블록 Pin/Unpin 10,000회 반복 (cu 폭증)"]
+        B_APP -->|쓰기 지연 무력화 / 단건 호출| B_DRV
+        B_DRV -->|네트워크 왕복 10,000회| B_DB
     end
 
-    subgraph DriverLayer["Oracle JDBC Thin Driver"]
-        D1["단건 전송 루프 (Single Execution)"]
-        D2["Array Processing (배열 바인딩 일괄 전송)"]
+    subgraph GOOD["✅ 권장: Native Array Processing (일괄 배칭)"]
+        direction TB
+        G_APP["애플리케이션 계층<br/>• Spring JdbcTemplate: batchUpdate()<br/>• jOOQ: batchInsert()<br/>• MyBatis: ExecutorType.BATCH<br/>• Spring Data JPA: SEQUENCE + batch_size"]
+        G_DRV["Oracle JDBC Thin Driver<br/>Array Processing (2차원 바인드 배열 패키징)"]
+        G_DB["Oracle 19c Database Engine<br/>• EXEC Call: 단 10회 (r=1000)<br/>• SQL*Net Roundtrip: 단 10회로 급감<br/>• 동일 블록 핀 유지 연속 삽입 (cu 95% 절감)"]
+        G_APP -->|PreparedStatement.executeBatch() 호출| G_DRV
+        G_DRV -->|1회 Call에 1,000건 일괄 전송| G_DB
     end
-
-    subgraph DBEngine["Oracle 19c Engine"]
-        E1["EXEC Call 10,000회 / r=1 / Roundtrip 10,000회"]
-        E2["EXEC Call 10회 / r=1000 / Roundtrip 10회"]
-    end
-
-    A1 -.->|"IDENTITY 매핑 시 (쓰기 지연 무력화)"| D1
-    A1 -.->|"SEQUENCE + batch_size 설정 시"| D2
-    A2 -->|"Native executeBatch 호출"| D2
-    A3 -.->|"foreach 다중 구문 (INSERT ALL)"| D1
-    A3 -.->|"BATCH ExecutorTemplate"| D2
-    A4 -->|"Native batchExecution"| D2
-    D1 --> E1
-    D2 --> E2
 ```
 
 ### 2.1. Spring Data JPA: `saveAll()`의 구조와 IDENTITY 전략의 한계
