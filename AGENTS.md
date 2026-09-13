@@ -50,3 +50,22 @@
 2. **동작 원리 및 아키텍처 분석**: 겉으로 보이는 지표(Starts)와 내부 물리 동작(Buffer Cache, Random Access, Full Scan, 데이터 파이프라인 흐름)의 차이를 정확히 짚고, 기술적 선택의 트레이드오프를 객관적으로 분석.
 3. **실측 데이터와 프로덕션 검증**: 실제 실행 계획(A-Plan), Buffers, Latency(P99/P95), 리소스 점유율 수치 비교로 입증.
 4. **회고와 배운 점**: 롤아웃 시 주의점, 시스템적 한계, 작업하면서 직접 느낀 실무적인 교훈이나 주의사항으로 간결하게 마무리.
+
+---
+
+## 4. 아키텍처 및 시스템 도식화 규칙 (Architecture Diagram Guideline)
+1. **텍스트 아스키 아트(ASCII Box Art) 전면 금지**:
+   - `+---+`, `| ... |` 형태의 콘솔용 텍스트 상자 작성을 금지한다.
+   - 데이터 구조, 블록 물리 배치, 컴포넌트 간 상호작용은 반드시 Docusaurus 호환 Mermaid 코드로 작성한다.
+2. **좌우(LR) 데이터 파이프라인 흐름 지향**:
+   - 세로(TD) 단순 나열보다, 유입(Source/Client) → 가공(Engine/Processor) → 영속(Storage/Buffer)의 흐름이 한눈에 보이는 `flowchart LR` 배치를 기본으로 사용한다.
+3. **서브시스템 경계(Boundary) 분리**:
+   - 모듈, 네트워크 경계, 계층(Layer)은 점선(`stroke-dasharray: 6 4`)의 `subgraph`로 명확히 격리한다.
+4. **시맨틱 도형 및 파스텔 팔레트 표준 적용 (Uber/Toss 스타일)**:
+   - 스토리지/DB/큐: 원통형 `[(...)]` + Green 계열 (`fill:#E8F5E9, stroke:#4CAF50, color:#1B5E20`)
+   - 내부 연산/프로세서: 사각 박스 `[...]` + Yellow 계열 (`fill:#FFF9C4, stroke:#FBC02D, color:#5D4037`)
+   - 외부 서비스/클라우드: 캡슐/클라우드 `(["..."])` + Blue 계열 (`fill:#E1F5FE, stroke:#0288D1, color:#01579B`)
+   - 코어 엔티티/컨테이너: White/Card (`fill:#FFFFFF, stroke:#424242, color:#212121`)
+5. **데이터 페이로드(Schema/Data) 및 캡션 명시**:
+   - 화살표 연결선 위에는 단순 화살표 대신 전달되는 데이터 스키마 또는 작업(`|"[Neil, Sotto Mare]"|`, `|"Merge datasets"|`)을 표기한다.
+   - 다이어그램 하단에는 반드시 `<p align="center"><em>Figure X: [설명]</em></p>` 또는 `[그림 X: 설명]` 캡션을 명시한다.
