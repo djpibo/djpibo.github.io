@@ -69,10 +69,10 @@ flowchart LR
         end
     end
 
-    subgraph Advisory["오라클 LBA (GV$SERVICE_LB_METRIC)"]
+    subgraph Advisory["오라클 LBA FAN 이벤트 (sys.sys$service_metrics_tab)"]
         direction TB
-        LBA["Node 1 가중치: 5% (과열)<br/><b>Node 2 가중치: 95% (추천)</b>"]
-        LBANote["<i>*신규 연결 시에만 참조되므로<br/>이미 맺어진 풀에서는 무용지물</i>"]
+        LBA["Node 1: percent=5 (flag=VIOLATING)<br/><b>Node 2: percent=95 (flag=GOOD)</b>"]
+        LBANote["<i>*신규 연결 시에만 리스너가 참조하므로<br/>이미 맺어진 풀에서는 무용지물</i>"]
     end
 
     MultiBatch ==>|"10개 스레드가 10개 커넥션 전담 점유"| HikariPool
@@ -102,29 +102,36 @@ flowchart LR
 ### 2.1. Oracle LBA(Load Balancing Advisory) 메커니즘과 SCAN의 한계
 Oracle RAC는 단순히 무작위로 접속을 나누는 것이 아니라, 각 노드의 실시간 부하 상태를 정밀하게 수집하여 접속 가중치를 산출하는 **LBA(Load Balancing Advisory)** 기능을 내장하고 있다.
 
-1. **백그라운드 메트릭 수집 (LREG / PMON)**:  
-   인스턴스 백그라운드 프로세스인 LREG(Listener Registration)는 각 노드의 실시간 CPU 사용률, 활성 세션 수, 서비스별 응답 시간(Service Time), 처리량(Throughput), 롱쿼리(Long Query) 실행 부하를 주기적으로 수집한다.
-2. **동적 가중치 산출 (`GV$SERVICE_LB_METRIC`)**:  
-   오라클은 이 성능 지표를 기반으로 어떤 노드가 더 한가한지를 백분율(Percentage) 점수로 환산하여 딕셔너리 뷰에 등록하고, SCAN Listener와 Local Listener에 브로드캐스팅한다.
+1. **서비스 로드밸런싱 목표 설정 (`CLB_GOAL` / `GOAL`)**:  
+   서비스 등록 시 `CLB_GOAL` 속성으로 리스너의 커넥션 분산 방식을 결정한다.
+   - `CLB_GOAL=LONG`: 기본값. 인스턴스별 총 세션 수(Session Count)를 기준으로 세션 수가 적은 노드로 연결한다.
+   - `CLB_GOAL=SHORT`: LBA(Load Balancing Advisory)의 실시간 추천 가중치를 기반으로 연결을 배분한다.
+   - 서비스 설정 확인: `SELECT name, clb_goal, goal FROM dba_services;`
+
+2. **LBA 메트릭 산출과 내부 큐 테이블 (`sys.sys$service_metrics_tab`)**:  
+   LREG(Listener Registration) 프로세스는 인스턴스별 CPU 사용률, 활성 세션 수, 서비스 응답시간(Service Time) 및 처리량(Throughput)을 종합 평가하여 LBA FAN(Fast Application Notification) 이벤트를 생성한다.  
+   이 LBA 메트릭은 데이터베이스 내부 고급 큐(AQ) 테이블인 **`sys.sys$service_metrics_tab`**에 저장되고 ONS(Oracle Notification Service)를 통해 리스너에 전파된다.
 
 ```sql
--- 실시간 RAC 노드별 서비스 부하 가중치 확인 쿼리
+-- 오라클 RAC LBA(Load Balancing Advisory) FAN 이벤트 실시간 모니터링 쿼리
 SELECT 
-    inst_id,
-    service_name,
-    nodename,
-    percent,       -- 신규 접속을 해당 노드로 할당할 추천 가중치 (0~100%)
-    status,        -- 노드 상태 (GOOD 등)
-    elapsed_time   -- 지표 갱신 인터벌
-FROM gv$service_lb_metric
-ORDER BY service_name, inst_id;
+    TO_CHAR(enq_time, 'HH24:MI:SS') AS enq_time,
+    user_data
+FROM sys.sys$service_metrics_tab
+ORDER BY enq_time DESC;
 ```
 
-서비스 설정 시 `CLB_GOAL=SHORT`(`DBMS_SERVICE`) 옵션이 부여되어 있으면, SCAN Listener는 신규 연결 요청이 들어올 때 이 `GV$SERVICE_LB_METRIC`의 `PERCENT` 가중치를 바탕으로 부하가 적은 노드로 세션을 보낸다.  
-- Node 1이 과열되면 Node 1의 `PERCENT`는 5%로 급락하고, 한가한 Node 2의 `PERCENT`는 95%로 치솟는다.
+```text
+-- 실제 sys.sys$service_metrics_tab 큐 페이로드 출력 예시
+SYS$RLBTYP('batch_svc', 'VERSION=1.0 database=orcl service=batch_svc 
+ { {instance=rac1 percent=5 flag=VIOLATING aff=FALSE}
+   {instance=rac2 percent=95 flag=GOOD aff=TRUE} } timestamp=2026-09-14 00:30:00')
+```
+
+`CLB_GOAL=SHORT` 환경에서 SCAN Listener는 인입되는 신규 연결 요청에 대해 `percent=95`가 부여된 한가한 Node 2로 세션을 핸드오버한다. (`lsnrctl services` 명령어로 확인 가능한 핸들러 부하 정보 역시 실시간 갱신된다.)
 
 **그러나 치명적인 한계가 존재한다.**  
-SCAN Listener와 Local Listener는 오직 **클라이언트가 신규 물리 TCP 연결(Handshake)을 맺기 위해 `CONNECT_DATA` 패킷을 전송하는 시점에만 이 가중치 테이블을 조회**한다.  
+SCAN Listener와 Local Listener는 오직 **클라이언트가 신규 물리 TCP 연결(Handshake)을 맺기 위해 `CONNECT_DATA` 패킷을 전송하는 시점에만 이 LBA 가중치를 참조**한다.  
 일단 소켓이 체결되어 Dedicated Server Process가 배정되고 나면, 이후 실행되는 수백만 번의 배치 SQL은 리스너를 완전히 거치지 않고(Bypass) 해당 노드의 서버 프로세스와 직접 통신한다.
 
 ---
@@ -135,7 +142,7 @@ SCAN Listener와 Local Listener는 오직 **클라이언트가 신규 물리 TCP
 
 #### 1단계: Cold Start 버스트 접속 (Burst Connection)
 배치 프로세스가 최초 구동되는 시점에는 Node 1과 Node 2 모두 CPU가 0~5% 수준으로 평온하다.  
-이 시점 `GV$SERVICE_LB_METRIC`의 가중치(`PERCENT`)는 양 노드 모두 50:50으로 균등하다.  
+이 시점 `sys.sys$service_metrics_tab`에 기록되는 LBA 가중치(`percent`)는 양 노드 모두 50:50으로 균등하다.  
 10개의 작업 스레드가 동시에 기동되면서, 불과 수십 밀리초(ms) 사이에 10개의 물리 DB 커넥션을 한꺼번에 요청(Burst Initialization)한다.  
 이때 클라이언트 DNS는 보통 3개의 SCAN IP 중 하나를 반환하고, 찰나의 순간 인입된 10개의 핸드셰이크 요청이 동일한 SCAN Listener를 거쳐 우연히 **Node 1의 Local Listener로 집중 핸드오버**된다. 그 결과 10개의 물리 커넥션이 모두 Node 1에 생성된다.
 
@@ -146,14 +153,14 @@ HikariCP 풀이 10개의 연결을 일괄 체결하는 속도가 LREG의 메트�
 #### 3단계: 10개 스레드의 지속적 쿼리 실행 및 LBA 무력화
 10개 워커 스레드는 풀에 확보된 10개의 커넥션을 각자 하나씩 쥐고 대량의 배치 청크(Chunk) SQL을 맹렬하게 실행하기 시작한다.  
 Node 1의 CPU는 즉각 83%로 치솟는다.  
-이 시점에 이르러서야 LREG는 사태를 파악하고 `GV$SERVICE_LB_METRIC`에서 Node 1의 가중치를 5%로 깎고, Node 2의 가중치를 95%로 극단 상향한다. SCAN Listener는 "다음 접속이 들어오면 무조건 Node 2로 보내겠다"며 준비 태세를 갖춘다.
+이 시점에 이르러서야 LREG는 사태를 파악하고 `sys.sys$service_metrics_tab`에서 Node 1의 가중치를 `percent=5 (flag=VIOLATING)`로 깎고, Node 2의 가중치를 `percent=95 (flag=GOOD)`로 극단 상향한다. SCAN Listener는 "다음 접속이 들어오면 무조건 Node 2로 보내겠다"며 준비 태세를 갖춘다.
 
 #### 4단계: 리스너 바이패스와 영구적 노드 결합 (Connection Affinity)
 **그러나 다음 접속은 영원히 오지 않는다.**  
 HikariCP는 커넥션 풀이다. 10개 스레드는 10개의 커넥션을 풀 내부에서 `Check-out` → 트랜잭션/SQL 실행 → `Check-in`하며 계속해서 돌려 쓸 뿐, 풀 밖으로 나가서 리스너에게 새로운 연결을 달라고 요청할 이유가 전혀 없다.  
 더욱이 기본 설정상 `maxLifetime`이 30분(`1800000ms`)으로 길게 잡혀 있으므로, 10분 동안 실행되는 배치 작업 내내 단 한 번의 커넥션 재생성도 발생하지 않는다.
 
-결과적으로 오라클 LBA 메트릭(`GV$SERVICE_LB_METRIC`)이 아무리 Node 2로 가라고 95% 가중치를 외쳐도, HikariCP는 이미 맺어둔 10개의 Node 1 커넥션만 쥐고 10개 스레드가 Node 1만 지속적으로 폭격하게 된다. 반대편 Node 2는 프로세스가 단 하나도 배정되지 않은 채 CPU 6%의 완전한 유휴 상태로 배치가 끝날 때까지 방치된다.
+결과적으로 오라클 LBA 메트릭(`sys.sys$service_metrics_tab`)이 아무리 Node 2로 가라고 `percent=95`를 외쳐도, HikariCP는 이미 맺어둔 10개의 Node 1 커넥션만 쥐고 10개 스레드가 Node 1만 지속적으로 폭격하게 된다. 반대편 Node 2는 프로세스가 단 하나도 배정되지 않은 채 CPU 6%의 완전한 유휴 상태로 배치가 끝날 때까지 방치된다.
 
 ### 2.3. Oracle UCP 대비 범용 풀의 태생적 제약
 Oracle 전용 커넥션 풀인 UCP(Universal Connection Pool)는 FCF(Fast Connection Failover) 및 ONS(Oracle Notification Service)와 긴밀히 연동되어, 런타임 트랜잭션 부하에 따라 세션을 동적으로 라우팅하는 RCLB(Runtime Connection Load Balancing) 기능을 제공한다.  
