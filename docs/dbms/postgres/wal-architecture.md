@@ -9,4 +9,4 @@ reading_time: "약 2분"
 
 # PostgreSQL WAL & MVCC Architecture
 
-PostgreSQL의 Write-Ahead Logging 메커니즘과 Multi-Version Concurrency Control 내부 동작을 정리합니다.
+PostgreSQL의 Write-Ahead Logging 메커니즘과 Multi-Version Concurrency Control 내부 동작을 정리한다.
