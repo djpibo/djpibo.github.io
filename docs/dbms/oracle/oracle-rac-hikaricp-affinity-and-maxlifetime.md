@@ -34,70 +34,126 @@ reading_time: "약 10분"
 
 ---
 
-## 2. 근본 원인 분석: SCAN 로드밸런싱과 HikariCP의 충돌
+## 2. 근본 원인 분석: Oracle LBA 가중치와 멀티 스레드 배치의 초기 쏠림 충돌
 
-클러스터 레벨에서 로드밸런싱이 무력화되고 단일 노드에 부하가 집중된 이유는, Oracle RAC의 접속 메커니즘과 HikariCP의 내부 풀링 아키텍처가 상충했기 때문이다.
+클러스터 레벨에서 로드밸런싱이 무력화되고 단일 노드에 부하가 집중된 이유는, Oracle RAC가 제공하는 동적 로드밸런싱 권고(LBA) 메커니즘과 멀티 스레드 배치 환경에서 동작하는 HikariCP의 내부 풀링 아키텍처가 정면으로 상충했기 때문이다.
 
 ```mermaid
 flowchart LR
-    subgraph AppServer["애플리케이션 계층 (Batch Server)"]
+    subgraph MultiBatch["멀티 스레드 배치 (10 Worker Threads)"]
         direction TB
-        AppTx["배치 트랜잭션 스레드"]
-        subgraph HikariPool["HikariCP Connection Pool"]
-            WarmConn["재사용 커넥션<br/>(LIFO FastList)<br/><b>Node 1 전용 세션 고정</b>"]
-        end
-        AppTx -->|"Check-out / Check-in 반복"| WarmConn
+        T1["Thread 1"]
+        T2["Thread 2"]
+        TDots["Thread 3 ~ 9 ..."]
+        T10["Thread 10"]
     end
 
-    subgraph NetLayer["네트워크 계층"]
-        SCAN["Oracle SCAN Listener<br/>(최초 수립 시에만 관여)"]
+    subgraph HikariPool["HikariCP Pool (10 Connections)"]
+        direction TB
+        C1["Conn 1"]
+        C2["Conn 2"]
+        CDots["Conn 3 ~ 9 ..."]
+        C10["Conn 10"]
+        PoolNote["초기 버스트 생성된<br/>10개 커넥션 영구 유지<br/><i>(maxLifetime 30분)</i>"]
     end
 
-    subgraph RAC["Oracle RAC 2-Node Cluster"]
+    subgraph RACCluster["Oracle RAC 2-Node Cluster"]
         direction TB
-        subgraph Node1["RAC Node 1 (과부하)"]
-            P1["Server Process<br/><b>CPU 83% 포화</b>"]
+        subgraph Node1["RAC Node 1 (과부하 집중)"]
+            P1["10개 Server Process<br/><b>CPU 83% 포화</b>"]
             SGA1[("Buffer Cache / SGA")]
         end
-        subgraph Node2["RAC Node 2 (유휴)"]
-            P2["Server Process<br/><b>CPU 6% 유휴</b>"]
+        subgraph Node2["RAC Node 2 (완전 유휴)"]
+            P2["수신 프로세스 없음<br/><b>CPU 6% 유휴</b>"]
             SGA2[("Buffer Cache / SGA")]
         end
     end
 
-    WarmConn == "고정된 단일 TCP 세션 유지" ==> P1
-    SCAN -. "초기 수립 이후 바이패스" .-> Node2
+    subgraph Advisory["오라클 LBA (GV$SERVICE_LB_METRIC)"]
+        direction TB
+        LBA["Node 1 가중치: 5% (과열)<br/><b>Node 2 가중치: 95% (추천)</b>"]
+        LBANote["<i>*신규 연결 시에만 참조되므로<br/>이미 맺어진 풀에서는 무용지물</i>"]
+    end
 
-    classDef app fill:#E1F5FE,stroke:#0288D1,stroke-width:1.5px,color:#01579B;
-    classDef warnNode fill:#FFCDD2,stroke:#D32F2F,stroke-width:2px,color:#B71C1C;
-    classDef idleNode fill:#E8F5E9,stroke:#4CAF50,stroke-width:1.5px,color:#1B5E20;
-    classDef scanNet fill:#FFF9C4,stroke:#FBC02D,stroke-width:1.5px,color:#5D4037;
+    MultiBatch ==>|"10개 스레드가 10개 커넥션 전담 점유"| HikariPool
+    HikariPool ==>|"10개 물리 세션이 Node 1에 독점 바인딩"| P1
+    HikariPool -. "풀 내부 무한 재사용으로 신규 연결 0건" .x Node2
+    Advisory -. "신규 요청 없어 가중치 전달 불가" .-> HikariPool
 
-    class AppTx,WarmConn app;
-    class Node1,P1 warnNode;
-    class Node2,P2 idleNode;
-    class SCAN scanNet;
+    classDef thread fill:#E1F5FE,stroke:#0288D1,stroke-width:1.2px,color:#01579B;
+    classDef pool fill:#FFF9C4,stroke:#FBC02D,stroke-width:1.5px,color:#5D4037;
+    classDef node1 fill:#FFCDD2,stroke:#D32F2F,stroke-width:2px,color:#B71C1C;
+    classDef node2 fill:#E8F5E9,stroke:#4CAF50,stroke-width:1.5px,color:#1B5E20;
+    classDef lba fill:#F3F4F6,stroke:#616161,stroke-width:1.2px,color:#212121;
 
-    style AppServer fill:#FAFAFA,stroke:#90CAF9,stroke-width:1.5px,stroke-dasharray: 6 4
-    style RAC fill:#FAFAFA,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray: 6 4
-    style NetLayer fill:#FFFFFF,stroke:#BDBDBD,stroke-width:1.2px
+    class T1,T2,TDots,T10 thread;
+    class C1,C2,CDots,C10,PoolNote pool;
+    class Node1,P1 node1;
+    class Node2,P2 node2;
+    class Advisory,LBA,LBANote lba;
+
+    style MultiBatch fill:#FAFAFA,stroke:#90CAF9,stroke-width:1.5px,stroke-dasharray: 6 4
+    style HikariPool fill:#FAFAFA,stroke:#FBC02D,stroke-width:1.5px,stroke-dasharray: 6 4
+    style RACCluster fill:#FAFAFA,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray: 6 4
+    style Advisory fill:#FFFFFF,stroke:#BDBDBD,stroke-width:1.2px
 ```
-<p align="center"><em>Figure 1: HikariCP의 LIFO 재사용 특성으로 인한 Oracle RAC 단일 노드 쏠림 현상</em></p>
+<p align="center"><em>Figure 1: 멀티 스레드 배치의 10개 커넥션 초기 버스트 수립과 LBA 메트릭 무력화로 인한 단일 노드 쏠림</em></p>
 
-### 2.1. Oracle SCAN의 한계: '신규 연결 수립' 시점에만 개입
-Oracle RAC는 클라이언트의 접속 요청을 분산하기 위해 SCAN(Single Client Access Name)과 Local Listener를 사용한다.  
-- 클라이언트가 SCAN IP로 접속하면, SCAN Listener는 각 노드의 실시간 부하(Load Balance Advisory)를 확인한 뒤 가장 한가한 노드의 Local Listener로 접속을 리다이렉트한다.
-- **핵심 메커니즘**: SCAN Listener는 **물리적인 TCP 커넥션이 최초로 생성(Handshake)되는 순간에만 개입**한다. 일단 소켓이 맺어지고 나면, 해당 커넥션 위에서 실행되는 모든 SQL 문장은 SCAN을 거치지 않고 해당 노드의 Dedicated Server Process와 직접 통신한다.
+### 2.1. Oracle LBA(Load Balancing Advisory) 메커니즘과 SCAN의 한계
+Oracle RAC는 단순히 무작위로 접속을 나누는 것이 아니라, 각 노드의 실시간 부하 상태를 정밀하게 수집하여 접속 가중치를 산출하는 **LBA(Load Balancing Advisory)** 기능을 내장하고 있다.
 
-### 2.2. HikariCP의 LIFO 구조와 강한 Connection Affinity
-HikariCP는 CPU 캐시 라인 적중률 극대화와 잠금 없는 동시성을 위해 `FastList` 기반의 LIFO(Last-In-First-Out) 스택 구조를 채택하고 있다.
-1. **Warm Connection 우선 할당**:  
-   방금 작업을 마치고 풀에 반납(Check-in)된 '따끈따끈한(Warm)' 커넥션이 다음 작업 세션에 최우선으로 다시 할당(Check-out)된다.
-2. **소수 커넥션의 지속적인 재사용**:  
-   배치 프로세스 내부에서 스레드가 순차적으로 SQL을 날릴 때, 풀 전체에 10개의 커넥션이 존재하더라도 실제로 작업을 수행하는 커넥션은 1~2개에 집중된다.
-3. **노드 결합(Connection Affinity) 고착**:  
-   애플리케이션 구동 시점에 Node 1로 연결된 소수의 물리 커넥션이 지속적으로 재사용되면서, 수만 건의 배치 INSERT/SELECT 문장이 오직 Node 1로만 전달된다.  
-   결과적으로 Oracle SCAN의 로드밸런싱은 무력화되고, 특정 노드에 물리 세션이 묶여버리는 현상이 발생한다.
+1. **백그라운드 메트릭 수집 (LREG / PMON)**:  
+   인스턴스 백그라운드 프로세스인 LREG(Listener Registration)는 각 노드의 실시간 CPU 사용률, 활성 세션 수, 서비스별 응답 시간(Service Time), 처리량(Throughput), 롱쿼리(Long Query) 실행 부하를 주기적으로 수집한다.
+2. **동적 가중치 산출 (`GV$SERVICE_LB_METRIC`)**:  
+   오라클은 이 성능 지표를 기반으로 어떤 노드가 더 한가한지를 백분율(Percentage) 점수로 환산하여 딕셔너리 뷰에 등록하고, SCAN Listener와 Local Listener에 브로드캐스팅한다.
+
+```sql
+-- 실시간 RAC 노드별 서비스 부하 가중치 확인 쿼리
+SELECT 
+    inst_id,
+    service_name,
+    nodename,
+    percent,       -- 신규 접속을 해당 노드로 할당할 추천 가중치 (0~100%)
+    status,        -- 노드 상태 (GOOD 등)
+    elapsed_time   -- 지표 갱신 인터벌
+FROM gv$service_lb_metric
+ORDER BY service_name, inst_id;
+```
+
+서비스 설정 시 `CLB_GOAL=SHORT`(`DBMS_SERVICE`) 옵션이 부여되어 있으면, SCAN Listener는 신규 연결 요청이 들어올 때 이 `GV$SERVICE_LB_METRIC`의 `PERCENT` 가중치를 바탕으로 부하가 적은 노드로 세션을 보낸다.  
+- Node 1이 과열되면 Node 1의 `PERCENT`는 5%로 급락하고, 한가한 Node 2의 `PERCENT`는 95%로 치솟는다.
+
+**그러나 치명적인 한계가 존재한다.**  
+SCAN Listener와 Local Listener는 오직 **클라이언트가 신규 물리 TCP 연결(Handshake)을 맺기 위해 `CONNECT_DATA` 패킷을 전송하는 시점에만 이 가중치 테이블을 조회**한다.  
+일단 소켓이 체결되어 Dedicated Server Process가 배정되고 나면, 이후 실행되는 수백만 번의 배치 SQL은 리스너를 완전히 거치지 않고(Bypass) 해당 노드의 서버 프로세스와 직접 통신한다.
+
+---
+
+### 2.2. 멀티 스레드 배치의 초기 10개 커넥션 쏠림과 편중 고착화 과정
+해당 배치 애플리케이션은 10개의 워커 스레드(`ThreadPoolTaskExecutor`)를 가동하며, HikariCP의 풀 크기도 10개(`maximum-pool-size=10`, `minimum-idle=10`)로 구성된 전형적인 **멀티 스레드 병렬 배치 구조**였다.  
+10개의 커넥션을 맺고 출발하는 멀티 스레드 배치가 왜 특정 한쪽 노드로 완전히 쏠려버리는지는 4단계의 시간 순서로 설명된다.
+
+#### 1단계: Cold Start 버스트 접속 (Burst Connection)
+배치 프로세스가 최초 구동되는 시점에는 Node 1과 Node 2 모두 CPU가 0~5% 수준으로 평온하다.  
+이 시점 `GV$SERVICE_LB_METRIC`의 가중치(`PERCENT`)는 양 노드 모두 50:50으로 균등하다.  
+10개의 작업 스레드가 동시에 기동되면서, 불과 수십 밀리초(ms) 사이에 10개의 물리 DB 커넥션을 한꺼번에 요청(Burst Initialization)한다.  
+이때 클라이언트 DNS는 보통 3개의 SCAN IP 중 하나를 반환하고, 찰나의 순간 인입된 10개의 핸드셰이크 요청이 동일한 SCAN Listener를 거쳐 우연히 **Node 1의 Local Listener로 집중 핸드오버**된다. 그 결과 10개의 물리 커넥션이 모두 Node 1에 생성된다.
+
+#### 2단계: LREG 메트릭 수집 및 보고 지연 (Reporting Lag)
+LREG 프로세스가 인스턴스 부하 변화를 감지하고, 가중치를 다시 계산하여 리스너에 통보하기까지는 통상 수 초(3~5초) 이상의 주기가 소요된다.  
+HikariCP 풀이 10개의 연결을 일괄 체결하는 속도가 LREG의 메트릭 브로드캐스팅 주기보다 훨씬 빠르기 때문에, 로드밸런서가 부하 차이를 인지하기도 전에 이미 10개 커넥션이 Node 1에 전부 못 박힌다.
+
+#### 3단계: 10개 스레드의 지속적 쿼리 실행 및 LBA 무력화
+10개 워커 스레드는 풀에 확보된 10개의 커넥션을 각자 하나씩 쥐고 대량의 배치 청크(Chunk) SQL을 맹렬하게 실행하기 시작한다.  
+Node 1의 CPU는 즉각 83%로 치솟는다.  
+이 시점에 이르러서야 LREG는 사태를 파악하고 `GV$SERVICE_LB_METRIC`에서 Node 1의 가중치를 5%로 깎고, Node 2의 가중치를 95%로 극단 상향한다. SCAN Listener는 "다음 접속이 들어오면 무조건 Node 2로 보내겠다"며 준비 태세를 갖춘다.
+
+#### 4단계: 리스너 바이패스와 영구적 노드 결합 (Connection Affinity)
+**그러나 다음 접속은 영원히 오지 않는다.**  
+HikariCP는 커넥션 풀이다. 10개 스레드는 10개의 커넥션을 풀 내부에서 `Check-out` → 트랜잭션/SQL 실행 → `Check-in`하며 계속해서 돌려 쓸 뿐, 풀 밖으로 나가서 리스너에게 새로운 연결을 달라고 요청할 이유가 전혀 없다.  
+더욱이 기본 설정상 `maxLifetime`이 30분(`1800000ms`)으로 길게 잡혀 있으므로, 10분 동안 실행되는 배치 작업 내내 단 한 번의 커넥션 재생성도 발생하지 않는다.
+
+결과적으로 오라클 LBA 메트릭(`GV$SERVICE_LB_METRIC`)이 아무리 Node 2로 가라고 95% 가중치를 외쳐도, HikariCP는 이미 맺어둔 10개의 Node 1 커넥션만 쥐고 10개 스레드가 Node 1만 지속적으로 폭격하게 된다. 반대편 Node 2는 프로세스가 단 하나도 배정되지 않은 채 CPU 6%의 완전한 유휴 상태로 배치가 끝날 때까지 방치된다.
 
 ### 2.3. Oracle UCP 대비 범용 풀의 태생적 제약
 Oracle 전용 커넥션 풀인 UCP(Universal Connection Pool)는 FCF(Fast Connection Failover) 및 ONS(Oracle Notification Service)와 긴밀히 연동되어, 런타임 트랜잭션 부하에 따라 세션을 동적으로 라우팅하는 RCLB(Runtime Connection Load Balancing) 기능을 제공한다.  
