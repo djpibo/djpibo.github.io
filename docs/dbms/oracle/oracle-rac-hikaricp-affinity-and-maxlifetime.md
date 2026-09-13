@@ -77,7 +77,7 @@ flowchart LR
 
     MultiBatch ==>|"10개 스레드가 10개 커넥션 전담 점유"| HikariPool
     HikariPool ==>|"10개 물리 세션이 Node 1에 독점 바인딩"| P1
-    HikariPool -. "풀 내부 무한 재사용으로 신규 연결 0건" .x Node2
+    HikariPool -. "풀 내부 무한 재사용 (신규 연결 없음)" .-> P2
     Advisory -. "신규 요청 없어 가중치 전달 불가" .-> HikariPool
 
     classDef thread fill:#E1F5FE,stroke:#0288D1,stroke-width:1.2px,color:#01579B;
