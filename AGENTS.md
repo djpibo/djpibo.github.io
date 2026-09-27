@@ -54,14 +54,17 @@
 ---
 
 ## 4. 아키텍처 및 시스템 도식화 규칙 (Architecture Diagram Guideline)
-1. **텍스트 아스키 아트(ASCII Box Art) 전면 금지**:
-   - `+---+`, `| ... |` 형태의 콘솔용 텍스트 상자 작성을 금지한다.
-   - 데이터 구조, 블록 물리 배치, 컴포넌트 간 상호작용은 반드시 Docusaurus 호환 Mermaid 코드로 작성한다.
-2. **좌우(LR) 데이터 파이프라인 흐름 지향**:
+1. **문서(Docusaurus)와 채팅 인터페이스(Chat UI)의 도식화 분리**:
+   - **Docusaurus 문서 파일(.md) 작성 시**: 데이터 구조, 블록 물리 배치, 컴포넌트 간 상호작용은 Docusaurus 호환 Mermaid 코드로 작성한다.
+   - **채팅 창(Chat UI) 답변 시 (★ 필수)**:
+     - 채팅 인터페이스는 Mermaid 렌더링을 지원하지 않으므로 **Mermaid 코드 블록 생성을 전면 금지**한다.
+     - 대신 직관적인 **아스키 텍스트(ASCII Art, 트리 형태 `+--`, 화살표 `->`, `[Box]` 등)**로 직접 도식화한다.
+2. **LaTeX 수식 및 특수 기호 표기 금지 (Chat UI)**:
+   - `$...$`, `\longleftrightarrow`, `\bowtie`, `\binom{n}{k}` 등의 raw LaTeX 수식 문법을 일체 쓰지 않는다(채팅창에서 렌더링되지 않고 깨져서 노출됨).
+   - 일반 텍스트 기호(`->`, `<->`, `조인`, `*`, 괄호 등)를 사용하여 누구나 바로 읽을 수 있게 직관적으로 표기한다.
+3. **좌우(LR) 데이터 파이프라인 흐름 지향 (문서용 Mermaid 기준)**:
    - 세로(TD) 단순 나열보다, 유입(Source/Client) → 가공(Engine/Processor) → 영속(Storage/Buffer)의 흐름이 한눈에 보이는 `flowchart LR` 배치를 기본으로 사용한다.
-3. **서브시스템 경계(Boundary) 분리**:
-   - 모듈, 네트워크 경계, 계층(Layer)은 점선(`stroke-dasharray: 6 4`)의 `subgraph`로 명확히 격리한다.
-4. **시맨틱 도형 및 파스텔 팔레트 표준 적용 (Uber/Toss 스타일)**:
+4. **시맨틱 도형 및 파스텔 팔레트 표준 적용 (문서용 Mermaid 기준)**:
    - 스토리지/DB/큐: 원통형 `[(...)]` + Green 계열 (`fill:#E8F5E9, stroke:#4CAF50, color:#1B5E20`)
    - 내부 연산/프로세서: 사각 박스 `[...]` + Yellow 계열 (`fill:#FFF9C4, stroke:#FBC02D, color:#5D4037`)
    - 외부 서비스/클라우드: 캡슐/클라우드 `(["..."])` + Blue 계열 (`fill:#E1F5FE, stroke:#0288D1, color:#01579B`)
@@ -69,3 +72,4 @@
 5. **데이터 페이로드(Schema/Data) 및 캡션 명시**:
    - 화살표 연결선 위에는 단순 화살표 대신 전달되는 데이터 스키마 또는 작업(`|"[Neil, Sotto Mare]"|`, `|"Merge datasets"|`)을 표기한다.
    - 다이어그램 하단에는 반드시 `<p align="center"><em>Figure X: [설명]</em></p>` 또는 `[그림 X: 설명]` 캡션을 명시한다.
+

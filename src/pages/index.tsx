@@ -67,6 +67,48 @@ const FEATURED_SECONDARY: ArticleItem[] = [
 
 const ARTICLES: ArticleItem[] = [
   {
+    id: 'art-optimizer-cardinality',
+    category: 'DBMS Core Internals',
+    categorySlug: 'dbms',
+    badge: 'VLDB Research',
+    title: '쿼리 옵티마이저의 한계: 2편의 VLDB 논문 분석과 Subquery·WITH 절의 동작 원리',
+    desc: '2015/2025 VLDB 논문 실측 데이터를 바탕으로 카디널리티 추정의 한계, Left-Deep vs Bushy Tree, 서브쿼리 언네스팅과 JPPD 메커니즘을 상세히 다룹니다.',
+    link: '/blog/query-optimizer-cardinality-and-subquery-internals',
+    date: '2026. 09. 27',
+    readTime: '9 min read',
+    author: 'deejay',
+    gradient: 'linear-gradient(135deg, #1a73e8 0%, #0d47a1 100%)',
+    icon: '📊',
+  },
+  {
+    id: 'art-batch-spm',
+    category: 'Production RCA',
+    categorySlug: 'case',
+    badge: 'Production RCA',
+    title: '30분 주기 배치 실행 계획 왜곡 해결: Bind Peeking에서 SPM 긴급 처방까지',
+    desc: '수주배분 배치 직후 발생한 실행 계획 왜곡 장애를 SQL Plan Management(SPM)로 고정하고 쿼리를 리팩토링한 프로덕션 튜닝 사례.',
+    link: '/docs/dbms/oracle/batch-execution-plan-instability-spm-tuning',
+    date: '2026. 09. 15',
+    readTime: '12 min read',
+    author: 'deejay',
+    gradient: 'linear-gradient(135deg, #ea4335 0%, #b71c1c 100%)',
+    icon: '🛠️',
+  },
+  {
+    id: 'art-jev-llm',
+    category: 'AI Agent & LLM',
+    categorySlug: 'ai',
+    badge: 'Deep Dive',
+    title: 'Jev의 등장으로 살펴본 기존 LLM 방식의 텐서 연산과 Jev와의 차이점',
+    desc: '트랜스포머 1개 레이어 내부의 물리적 텐서 연산 메커니즘과 Jev가 추론 지연을 혁신한 구조적 차이를 엔지니어링 관점에서 분석합니다.',
+    link: '/docs/agent/jev-vs-traditional-llm-mechanics',
+    date: '2026. 09. 20',
+    readTime: '15 min read',
+    author: 'deejay',
+    gradient: 'linear-gradient(135deg, #fbbc04 0%, #e37400 100%)',
+    icon: '⚡',
+  },
+  {
     id: 'art-1',
     category: 'DBMS Core Internals',
     categorySlug: 'dbms',
@@ -86,7 +128,7 @@ const ARTICLES: ArticleItem[] = [
     categorySlug: 'ai',
     badge: 'Next-Gen DB',
     title: 'Autonomous DBA: LLM에 대한 근본적인 질문과 에이전트 설계',
-    desc: 'DBA 일상 업무를 자동화하는 LLM 기반 AI 에이전트 설계 시 고려해야 할 환각(Hallucination) 방지와 권한 분리 아키텍처.',
+    desc: 'DBA 일상 업무를 자동화하는 LLM 기반 AI 에이전트 설계 시 고려해야 할 환각 방지와 권한 분리 아키텍처.',
     link: '/docs/agent/llm-fundamental-questions',
     date: '2026. 08. 12',
     readTime: '7 min read',
@@ -225,7 +267,7 @@ export default function Home(): ReactNode {
           <div className={styles.secondaryColumn}>
             <div className={styles.secondaryHeader}>
               <span className={styles.secondaryHeaderTitle}>Editor's Picks</span>
-              <Link to="/docs/intro" style={{ fontSize: '0.82rem', fontWeight: 600 }}>
+              <Link to="/docs/category/oracle" style={{ fontSize: '0.82rem', fontWeight: 600 }}>
                 View all docs →
               </Link>
             </div>
@@ -301,25 +343,6 @@ export default function Home(): ReactNode {
                 </div>
               </Link>
             ))}
-          </div>
-        </section>
-
-        {/* Newsletter & Engineering Archive Banner */}
-        <section className={styles.newsletterBanner}>
-          <h2 className={styles.newsletterTitle}>Stay Connected with Engineering Traces</h2>
-          <p className={styles.newsletterDesc}>
-            데이터베이스 코어 튜닝부터 자율형 AI 에이전트까지, 최신 기술 아카이브와 장애 분석 리포트를 확인해보세요.
-          </p>
-          <div className={styles.newsletterActions}>
-            <Link to="/docs/intro" className={styles.primaryButton}>
-              Explore Full Architecture Docs
-            </Link>
-            <Link to="https://github.com/djpibo" className={styles.secondaryButton}>
-              GitHub Repository ↗
-            </Link>
-            <Link to="/blog" className={styles.secondaryButton}>
-              All Blog Posts →
-            </Link>
           </div>
         </section>
       </main>
