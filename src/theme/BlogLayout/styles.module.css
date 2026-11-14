@@ -1,0 +1,58 @@
+.blogWrapper {
+  display: flex;
+  flex: 1 0 auto;
+}
+
+.blogRoot {
+  display: flex;
+  width: 100%;
+}
+
+.blogSidebarWrapper {
+  display: none;
+}
+
+.blogMainContainer {
+  display: flex;
+  width: 100%;
+}
+
+.blogItemWrapper {
+  width: 100%;
+}
+
+@media (min-width: 997px) {
+  .blogSidebarWrapper {
+    display: block;
+    width: var(--doc-sidebar-width, 300px);
+    flex: 0 0 var(--doc-sidebar-width, 300px);
+    border-right: 1px solid var(--ifm-toc-border-color);
+    padding: 0 0.5rem 0 0.75rem;
+  }
+
+  /* BlogSidebarDesktop renders <aside class="col col--3"> internally;
+     expand it to fill the 300px left sidebar panel cleanly */
+  .blogSidebarWrapper :global(aside.col) {
+    max-width: 100%;
+    flex: 0 0 100%;
+    width: 100%;
+    padding: 0 0.75rem;
+  }
+
+  .blogMainContainer {
+    flex-grow: 1;
+    max-width: calc(100% - var(--doc-sidebar-width, 300px));
+  }
+
+  .blogMainContainerFull {
+    max-width: 100%;
+  }
+
+  .blogItemCol {
+    max-width: 75% !important;
+  }
+
+  .blogListCol {
+    max-width: 100% !important;
+  }
+}
