@@ -28,6 +28,11 @@ optimization:
   permalink: /optimization
   description: 성능 최적화 및 튜닝
 
+architecture:
+  label: Architecture
+  permalink: /architecture
+  description: 시스템 및 데이터 아키텍처 내부 원리
+
 troubleshooting:
   label: TroubleShooting
   permalink: /troubleshooting
