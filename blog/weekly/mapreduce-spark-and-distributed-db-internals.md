@@ -501,12 +501,67 @@ CPU는 명령어 처리 속도를 높이기 위해 15-20단계의 파이프라�
 
 ClickHouse나 Snowflake의 Vectorized 엔진은 위 코드 예시처럼 `if` 문을 쓰지 않는다. 대신 SIMD 비교 명령어를 통해 조건을 만족하는 위치만 `1`로 표시한 Bitmask나 통과한 행의 인덱스 번호만 모아둔 Selection Vector(예: `[1, 3, 4, 7]`) 배열을 생성한다. 분기 자체가 사라지므로 CPU 파이프라인이 단 한 번도 멈추지 않고 최고 클럭 속도로 배열을 밀어낸다.
 
-#### (3) 왜 순수 JVM에서는 SIMD 극대화가 어렵고 C++ Native 엔진이 유리한가?
-JVM의 JIT Compiler(C2)도 단순 배열 루프를 SIMD로 바꿔주는 Auto-Vectorization 기능을 가지고 있다. 하지만 기본 Spark 엔진에서는 다음과 같은 이유로 SIMD 변환이 자주 무력화된다.
-- Spark의 `UnsafeRow`는 모든 컬럼이 붙어 있는 Row 포맷이므로 동일 컬럼 값들이 메모리상에 연속된 배열로 놓여 있지 않다.
-- 루프 내부에 Null 비트셋 확인, 가변 길이 Offset 계산, JVM SafePoint 폴링, 배열 경계 검사(Bounds Check) 같은 부가 명령이 끼어들면 JIT Compiler가 패턴 인식을 포기하고 일반 스칼라 명령어로 컴파일한다.
+#### (3) 왜 기본 JVM 엔진보다 C++ Native 엔진(Photon, Gluten/Velox)이 훨씬 빠른가?
+단순히 언어를 Java에서 C++로 바꾸었기 때문이 아니다. JVM이라는 가상 머신이 안전을 위해 강제하는 물리적 제약들을 C++ 네이티브 수준에서 걷어내고, 100% 순수 Off-Heap 메모리 위에서 하드웨어를 직접 통제하기 때문이다.
 
-이러한 JVM의 구조적 한계를 극복하기 위해 최근 Spark 생태계에서도 기본 JVM 실행 엔진을 걷어내고, Snowflake·ClickHouse와 동일한 C++ Columnar Vectorized 엔진을 JNI로 결합하는 아키텍처(상용 Databricks Photon 엔진, 오픈소스 Apache Gluten + Meta Velox 엔진)가 빠르게 도입되고 있다.
+1. 앞단(Scan -> Filter -> Project)에서 `ColumnarToRow` 변환 완전 제거:
+   쿼리에서 데이터가 가장 많은 구간은 파일을 막 읽어들인 직후다. 기본 JVM Spark는 Parquet에서 1억 건을 읽자마자 무조건 가로 행(`UnsafeRow`) 1억 개로 재조립한 뒤 `WHERE` 조건을 검사한다. 반면 Photon과 Velox는 세로 배열 상태 그대로 SIMD 필터링을 먼저 끝내버리고, 살아남은 소수의 데이터만 다음 단계로 넘긴다.
+2. JVM의 안전장치(Bounds Check, SafePoint) 제거와 SIMD 강제 실행:
+   JVM JIT Compiler(C2)도 단순 루프를 SIMD로 바꿔주는 Auto-Vectorization 기능이 있다. 하지만 JVM은 메모리 침범을 막기 위해 루프마다 배열 인덱스 경계 검사(Array Bounds Check)와 GC를 위한 SafePoint 폴링 코드를 강제로 끼워 넣는다. 여기에 `NULL` 체크 분기까지 섞이면 JIT 컴파일러는 패턴 인식을 포기하고 1번에 1개씩만 계산하는 일반 스칼라 명령어로 컴파일한다. 반면 C++ 엔진은 `_mm512_add_epi32` 같은 CPU 하드웨어 SIMD 명령어(Intrinsics)를 코드에서 직접 호출하여 항상 1클럭에 16개씩 강제로 묶어서 처리한다.
+3. 런타임 코드 생성(Whole-Stage CodeGen) 및 JIT 워밍업 지연 제거:
+   기본 Spark는 쿼리가 들어올 때마다 수천 줄의 Java 소스 코드를 즉석에서 문자열로 조립해 컴파일(Janino)하고, 생성된 함수가 너무 길어지면(JVM의 64KB 바이트코드 제한 초과) 최적화가 아예 풀려버린다. 반면 Photon과 Velox는 이미 C++ 컴파일러(`-O3`)로 최고 수준으로 번역해 둔 벡터 연산 함수(Pre-compiled Vectorized Kernels)들을 조합해 워밍업 없이 첫 블록부터 최고 속도로 실행한다.
+4. 100% 순수 Off-Heap(Native Memory) 사용과 Zero-Copy, 64-Byte 메모리 정렬:
+   - 진정한 100% Off-Heap 동작: 기본 Spark는 `Tungsten`을 써도 연산을 돌리는 주체가 JVM이라 실행 도중 수많은 제어용 객체가 On-Heap에 생성된다(심지어 기본 설정인 `offHeap.enabled=false`에서는 `UnsafeRow`조차 On-Heap의 `byte[]` 배열 안에 만들어진다). 반면 Photon과 Gluten(Velox)은 파일 읽기부터 컬럼 배열, 조인 해시 테이블, Shuffle 버퍼까지 전 과정을 C++ 전용 메모리 풀(Arena Allocator)을 통해 100% OS Native Memory(Off-Heap)에서만 만들고 바로 해제한다. JVM GC가 스캔할 객체 자체가 아예 생기지 않는다.
+   - Zero-Copy 연동: Spark(JVM)가 작업을 지시하고 Velox(C++)가 연산할 때도 데이터를 복사해서 주고받지 않는다. Off-Heap에 표준화된 컬럼 메모리 규격(Apache Arrow 포맷)으로 올려두고 메모리 시작 주소(포인터 숫자 하나)만 넘겨주므로 복사 비용이 0(Zero-Copy)이다.
+   - 64-Byte Alignment 고정과 CPU Prefetch 제어: JVM On-Heap에서는 GC가 청소 도중 객체 위치를 마음대로 옮겨버리므로(Compaction) 메모리 주소가 64바이트 단위로 맞아떨어지지 않는다. 반면 C++ Off-Heap은 GC가 건드리지 못하므로 처음부터 메모리 주소를 CPU 캐시 라인 크기인 64바이트 배수(`alignas(64)`)에 칼같이 고정해 SIMD 속도를 극대화한다. 나아가 해시 테이블을 뒤질 때도 CPU에게 "10번째 뒤에 처리할 메모리 주소를 지금 미리 RAM에서 L1 캐시로 퍼 올려놔라"라는 하드웨어 프리페치 명령어(`__builtin_prefetch`)를 직접 내려 CPU 대기 시간(Memory Stall)을 지워버린다.
+
+---
+
+### 4.5 반대로 인메모리에서 컬럼 단위(Columnar)로만 처리할 때의 비효율과 하이브리드 전환
+
+그렇다면 인메모리에서도 무조건 컬럼 단위(Columnar)로 처리하는 것이 만능일까? 그렇지 않다. 만약 Columnar가 모든 상황에서 완벽했다면 모든 엔진이 Row 포맷을 완전히 폐기했을 것이다.
+
+메모리에서 데이터를 세로 배열(Columnar)로 들고 있을 때는 "한 행(Row)에 속한 여러 컬럼을 동시에 묶어서 다뤄야 하는 순간"에 오히려 심각한 비효율이 발생한다.
+
+```mermaid
+flowchart LR
+    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
+    classDef process fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
+    classDef cloud fill:#E1F5FE,stroke:#0288D1,color:#01579B;
+
+    subgraph COL_GATHER ["1. Columnar의 약점: Shuffle / Hash Join 시 행 재조립(Gather) 병목"]
+        direction LR
+        CA1[("Col 1 배열 (주소 0x10000)<br/>[ ... | 3번행 값 | ... ]")]:::storage
+        CA2[("Col 2 배열 (주소 0x50000)<br/>[ ... | 3번행 값 | ... ]")]:::storage
+        CA20[("Col 20 배열 (주소 0xF0000)<br/>[ ... | 3번행 값 | ... ]")]:::storage
+        RECON["3번 행 1개 패킷 조립<br/>메모리 20군데 점프 (Cache Miss 폭증)"]:::process
+        CA1 -->|"점프 1"| RECON
+        CA2 -->|"점프 2"| RECON
+        CA20 -->|"점프 20"| RECON
+    end
+
+    subgraph HYBRID_PIPE ["2. 현대 엔진(Photon / Velox / Snowflake)의 하이브리드 파이프라인"]
+        direction LR
+        SCAN_FILT["Scan / Filter / 단순 집계<br/>Columnar 배열 + SIMD 유지"]:::cloud
+        JOIN_SHUF["Hash Join 테이블 / Shuffle 전송<br/>컴팩트 Row 포맷으로 전환해 일괄 복사"]:::process
+        SCAN_FILT -->|"살아남은 행만 Row로 전환"| JOIN_SHUF
+    end
+```
+<p align="center"><em>Figure 9: 인메모리 Columnar 구조에서 행 재조립(Gather) 시 발생하는 Cache Miss 병목과 현대 엔진의 하이브리드 전환 구조</em></p>
+
+1. Shuffle, Hash Join, Sort 구간에서 발생하는 행 재조립(Gather) 병목:
+   - 단순 필터링(`WHERE price > 50000`)이나 단일 컬럼 합계(`SUM(price)`)는 `price` 배열 하나만 쭉 훑으면 되므로 Columnar가 압도적으로 빠르다.
+   - 하지만 네트워크 Shuffle이나 Hash Join 단계로 넘어가면 상황이 정반대가 된다. 네트워크로 데이터를 보낼 때는 "1번 서버로는 3번 행, 2번 서버로는 4번 행"처럼 행(Row) 단위로 묶어서 보내야 한다.
+   - 만약 20개 컬럼을 가진 테이블이 메모리에 20개의 세로 배열로 흩어져 있다면, 조건에 통과한 `3번 행` 하나를 패킷으로 묶기 위해 서로 멀리 떨어진 20개의 컬럼 배열 주소(`0x10000`, `0x50000`, ..., `0xF0000`)를 일일이 찾아다니며 값을 하나씩 뽑아와야(Gather / Tuple Reconstruction) 한다.
+   - 컬럼 개수가 많은 테이블(Wide Table)일수록 이 과정에서 메모리 20군데를 랜덤하게 찔러대느라 CPU L1/L2 Cache Miss가 폭증한다. 반면 Spark의 `UnsafeRow`는 한 행의 20개 컬럼이 이미 한 덩어리로 붙어 있으므로 그 메모리 블록 하나만 통째로 복사(`memcpy`)하면 끝난다.
+2. 필터링 이후 배열 중간에 생기는 구멍(희소성)과 가변 길이 데이터 관리 비용:
+   - 1,000개의 배열 원소 중 `WHERE` 조건을 통과한 데이터가 딱 2개뿐이라면, Row 방식은 통과한 2개의 행만 넘기면 끝난다. 반면 Columnar 방식은 20개 컬럼 배열 전체에 대해 살아남은 인덱스 번호표(`Selection Vector`)를 계속 들고 다니거나, 살아남은 원소만 모아서 새 배열로 다시 복사(Compaction)해야 한다.
+   - 또한 길이가 들쭉날쭉한 문자열(`String`)이나 중첩 구조(`Array`, `Map`, `JSON`)를 Columnar로 다룰 때는 `[Null 비트맵 배열] + [글자 시작 위치 Offset 배열] + [실제 글자 바이트 배열]`이라는 3중 배열 구조를 컬럼마다 유지하고 싱크를 맞춰야 하므로 메모리 관리가 훨씬 복잡하다.
+3. 결론 — 현대 엔진들의 해법(하이브리드 실행 파이프라인):
+   결국 인메모리에서도 Row 방식과 Columnar 방식은 각자 잘하는 구간이 명확히 다르다.
+   - Scan / Filter (`WHERE`) / 단일 컬럼 집계 (`SUM`, `AVG`): Columnar 압승 (캐시 밀도 100% + SIMD)
+   - Hash Join / 다중 키 Group By / Sort / Shuffle 전송: Row (`UnsafeRow`) 유리 (한 덩어리 복사 및 비교)
+   이 때문에 최신 아키텍처인 Snowflake, Databricks `Photon`, `Apache Gluten(Velox)`은 무조건 하나만 고집하지 않는다. 데이터가 가장 많은 앞단(Scan, Filter, 단순 집계)에서는 Columnar Vectorized(SIMD)로 빠르게 데이터 건수를 줄인 뒤, 조인 해시 테이블을 만들거나 네트워크 Shuffle을 수행하는 구간에서는 내부적으로 다시 컴팩트한 Row 포맷으로 전환해 처리하는 하이브리드 방식을 채택하고 있다.
 
 ---
 
