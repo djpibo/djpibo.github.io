@@ -401,13 +401,54 @@ flowchart LR
 
 ---
 
-### 3.3 장애 복구(Fault Tolerance)와 Shuffle의 트레이드오프
+### 3.3 장애 복구(Fault Tolerance)와 Shuffle 파일 체크포인트의 내부 원리
 
-- 분산 분석 DB (속도를 위한 Pipeline Streaming Exchange):
-  Snowflake나 ClickHouse 같은 MPP DB는 대화형 쿼리 응답 시간(Latency)을 줄이기 위해, 노드 간 데이터를 주고받을 때 Disk에 체크포인트 파일을 남기지 않고 네트워크 소켓을 통해 다음 노드의 메모리로 직접 스트리밍(Exchange Operator)하는 방식을 기본으로 채택한다(메모리 한계 도달 시에만 임시 Spill 발생).
-  만약 1시간 동안 수행되는 초대형 배치 쿼리가 55분째에 특정 워커 노드의 하드웨어 결함이나 OOM으로 중단되면, 중간 Stage의 결과물이 어디에도 남아있지 않으므로 55분간의 작업을 모두 폐기하고 쿼리 전체를 처음부터 다시 실행해야 한다.
-- Spark (완주 보장을 위한 Shuffle Materialization):
-  Spark는 Stage가 끝날 때마다 Shuffle 데이터를 반드시 워커 노드의 Local Disk에 파일로 기록한다. 이 디스크 I/O 때문에 짧은 대화형 쿼리에서는 MPP DB보다 느리지만, 100대의 노드 중 1대가 55분째에 죽더라도 쿼리 전체를 취소하지 않고 직전 Stage의 로컬 Shuffle 파일을 읽어 죽은 노드가 맡았던 Task 몇 개만 다른 노드에서 재실행(Re-compute)하여 작업을 끝까지 완수한다.
+일반적인 조회 및 집계 쿼리에서는 Snowflake나 ClickHouse가 Spark보다 훨씬 빠른 응답 속도를 보여주지만, 수십 테라바이트 규모의 장시간 배치에서는 여전히 Spark가 표준으로 사용된다. 그 결정적인 이유는 Stage 간 데이터를 넘길 때 작동하는 Shuffle 파일 체크포인트(Shuffle File Checkpointing / Materialization) 메커니즘에 있다.
+
+쉽게 비유하면, 게임에서 다음 스테이지(보스방)로 넘어가기 직전에 지금까지 진행한 상태를 로컬 디스크에 강제로 세이브(Save)해 두는 안전장치다.
+
+```mermaid
+flowchart LR
+    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
+    classDef process fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
+    classDef cloud fill:#E1F5FE,stroke:#0288D1,color:#01579B;
+
+    subgraph MPP_FAIL ["1. 체크포인트 없는 스트리밍 (Snowflake / ClickHouse / MongoDB $lookup)"]
+        direction LR
+        M_S1["Stage 1 (메모리)"]:::cloud
+        M_S2["Stage 2 (메모리)"]:::cloud
+        M_S3["Stage 3 (55분째 노드 1대 죽음)"]:::process
+        M_S1 -->|"디스크 기록 없이 직송"| M_S2
+        M_S2 -->|"디스크 기록 없이 직송"| M_S3
+        M_S3 -.->|"중간 파일 없음: 0분(Stage 1)부터 전체 재실행"| M_S1
+    end
+
+    subgraph SP_SAVE ["2. Spark의 Shuffle 파일 체크포인트 (.data + .index)"]
+        direction LR
+        S_S1["Stage 1 완료"]:::cloud
+        S_CHK[("로컬 디스크 세이브 파일<br/>shuffle.data (파티션별 데이터)<br/>shuffle.index (파티션별 위치 목차)")]:::storage
+        S_S2["Stage 2 (55분째 3번 Task 죽음)"]:::process
+        S_REC["다른 노드에서 3번 Task 1개만 재실행"]:::cloud
+        S_S1 -->|"로컬 디스크에 영속화"| S_CHK
+        S_CHK -->|"네트워크 Fetch"| S_S2
+        S_CHK -.->|".index 보고 3번 파티션만 다시 읽음 (5분 내 복구)"| S_REC
+    end
+```
+<p align="center"><em>Figure 8: 메모리 직송 스트리밍 엔진의 연쇄 실패 구조와 Spark의 Shuffle 파일 체크포인트(.data/.index) 기반 부분 복구 구조 비교</em></p>
+
+1. 물리적 동작 — Stage가 끝날 때 로컬 디스크에 무엇을 기록하는가?
+   Spark에서 `Filter -> Map`까지는 다른 서버로 데이터를 보낼 필요가 없으므로 메모리에서 쭉 흘러간다. 그러다 `JOIN`이나 `GROUP BY`처럼 다른 서버의 데이터와 섞어야 하는 경계선(Shuffle)을 만나면, 앞 단계(`Stage 1`)의 모든 서버는 계산 결과를 다음 단계(`Stage 2`) 서버의 메모리로 바로 쏘지 않고 무조건 자기 로컬 디스크에 두 개의 파일로 내려쓴다.
+   - `shuffle_0_0_0.data` (실제 데이터 파일): 다음 단계의 몇 번 서버(Task)로 갈지 목적지 번호(`Partition ID`)별로 분류된 실제 데이터(`UnsafeRow` 바이트 덩어리)들을 하나의 파일에 순서대로 이어서 기록한다.
+   - `shuffle_0_0_0.index` (위치 목차 파일): 각 목적지 번호(`Partition ID`)의 데이터가 `.data` 파일의 몇 바이트 위치(Offset)부터 시작해서 어디서 끝나는지 적어둔 목차 파일이다(예: "0번 파티션은 0-1024바이트, 1번 파티션은 1024-4096바이트").
+
+2. 장애 복구 비교 — 1시간짜리 배치의 55분째에 서버 1대가 죽었을 때:
+   - 세이브 파일이 없는 경우 (Snowflake, ClickHouse, MongoDB `$lookup`):
+     응답 속도를 높이기 위해 디스크에 중간 파일을 남기지 않고 네트워크 소켓으로 다음 노드의 메모리에 바로 쏘는 방식을 쓴다. 만약 100대의 서버가 3단계 조인을 55분간 수행하다가 마지막 단계에서 서버 1대가 죽으면, 그 서버가 받던 중간 데이터가 디스크 어디에도 남아있지 않다. 결국 죽은 서버의 데이터를 다시 만들려면 이미 끝난 앞 단계들까지 거슬러 올라가 100대 서버 전체가 0분부터 쿼리 전체를 다시 실행해야 한다.
+   - 세이브 파일이 있는 경우 (Apache Spark):
+     Spark에서는 55분째에 3번 서버가 죽더라도 앞선 단계들을 다시 계산하지 않는다. 직전 Stage가 끝날 때 모든 서버의 로컬 디스크에 `.data`와 `.index` 파일이 고스란히 세이브되어 있기 때문이다. Spark는 살아 있는 다른 서버 하나에게 "직전 Stage 디스크 파일들의 `.index` 목차를 보고 3번 파티션 위치만 다시 읽어서, 죽은 3번 Task 하나만 재실행해라"라고 지시한다. 나머지 99대의 서버가 한 일은 그대로 보존된 채 몇 분 만에 복구가 끝난다.
+
+3. 메모리 한계 극복 (Out-of-Core 처리):
+   서버 메모리가 64GB인데 조인해야 할 중간 데이터가 200GB로 불어나는 상황에서도 차이가 난다. 인메모리 처리에 의존하는 DB들은 이때 `OutOfMemory(OOM)` 에러를 뱉고 멈추지만, Spark는 200GB든 10TB든 로컬 디스크의 Shuffle 파일로 나누어 기록하고 디스크에 정렬된 파일을 조금씩 스트리밍으로 읽어 병합(`Sort-Merge Join`)하므로 메모리보다 훨씬 큰 데이터도 죽지 않고 처리한다.
 
 ---
 
@@ -439,7 +480,7 @@ flowchart LR
         C_SIMD -->|"단일 SIMD 비교 명령"| C_MASK
     end
 ```
-<p align="center"><em>Figure 8: Row 기반 스칼라 실행 모델과 Columnar Vectorized SIMD 실행 모델의 CPU 캐시 및 레지스터 활용 비교</em></p>
+<p align="center"><em>Figure 9: Row 기반 스칼라 실행 모델과 Columnar Vectorized SIMD 실행 모델의 CPU 캐시 및 레지스터 활용 비교</em></p>
 
 ### 4.1 기존 Volcano(Tuple-at-a-time) 모델의 CPU 병목
 
@@ -547,7 +588,7 @@ flowchart LR
         SCAN_FILT -->|"살아남은 행만 Row로 전환"| JOIN_SHUF
     end
 ```
-<p align="center"><em>Figure 9: 인메모리 Columnar 구조에서 행 재조립(Gather) 시 발생하는 Cache Miss 병목과 현대 엔진의 하이브리드 전환 구조</em></p>
+<p align="center"><em>Figure 10: 인메모리 Columnar 구조에서 행 재조립(Gather) 시 발생하는 Cache Miss 병목과 현대 엔진의 하이브리드 전환 구조</em></p>
 
 1. Shuffle, Hash Join, Sort 구간에서 발생하는 행 재조립(Gather) 병목:
    - 단순 필터링(`WHERE price > 50000`)이나 단일 컬럼 합계(`SUM(price)`)는 `price` 배열 하나만 쭉 훑으면 되므로 Columnar가 압도적으로 빠르다.
@@ -565,15 +606,86 @@ flowchart LR
 
 ---
 
-## 5. 요약 및 워크로드별 선택 기준
+## 5. 확장 비교: 실시간 문서형 DB(MongoDB)는 어떻게 다르고 어떤 특장점이 있는가?
 
-세 가지 기술의 내부 메커니즘 차이를 실무 아키텍처 선택 기준으로 정리하면 다음과 같다.
+지금까지 살펴본 Spark, Snowflake, ClickHouse가 "수억 건의 데이터를 한꺼번에 훑어서 통계를 내는 분석 엔진(OLAP/Batch)"이라면, 현업에서 자주 함께 거론되는 MongoDB는 정반대 영역인 "실시간 서비스 트랜잭션 처리용 문서형 데이터베이스(Document OLTP)"다.
 
-1. MapReduce에서 Spark로의 전환 이유:
-   MapReduce의 Task당 1회용 JVM 생성 비용과 Job 간 HDFS 강제 쓰기 병목을 해결하기 위해, Spark는 종료되지 않고 재사용되는 Executor Thread Pool, Off-Heap 기반의 `UnsafeRow` 바이너리 메모리 관리, 그리고 Narrow Dependency 구간을 단일 루프로 합치는 In-Memory Pipelining을 도입했다.
-2. Spark가 적합한 영역:
-   정형 SQL뿐만 아니라 비정형 텍스트·로그 파싱, 외부 API 호출, 머신러닝 파이프라인 등 코드 수준의 유연한 제어가 필요할 때, 그리고 수 시간 이상 소요되는 초대형 데이터 조인·변환 배치에서 특정 노드 장애나 데이터 Skew가 발생해도 끝까지 작업을 완주(Task 단위 부분 복구)해야 하는 ETL 파이프라인에 적합하다.
-3. Snowflake가 적합한 영역:
-   스토리지와 컴퓨팅(Virtual Warehouse)의 완전한 분리를 통해 워크로드별 격리와 즉시 스케일링이 필요할 때, 그리고 글로벌 메타데이터 Pruning과 C++ Vectorized 엔진을 바탕으로 복잡한 다중 테이블 JOIN 및 전사 BI/Ad-hoc 분석 쿼리를 운영 부담 없이 처리하고자 할 때 적합하다.
-4. ClickHouse가 적합한 영역:
-   복잡한 다중 테이블 JOIN보다는 넓게 비정규화된(Wide Table) 단일 테이블이나 소수 테이블 위에서, C++ SIMD 연산과 `MergeTree` Sparse Index를 활용해 수억에서 수십억 건의 로그·이벤트·시계열 데이터를 서브초(Sub-second) 단위로 실시간 집계해야 하는 대고객 대시보드 및 관측성(Observability) 시스템에 적합하다.
+앞서 다룬 메모리 배치, 조인, 재조립(Gather) 관점으로 MongoDB를 대조해 보면 왜 이 기술들이 서로를 대체하지 않고 함께 쓰이는지 명확해진다.
+
+```mermaid
+flowchart LR
+    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
+    classDef process fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
+    classDef cloud fill:#E1F5FE,stroke:#0288D1,color:#01579B;
+
+    subgraph RDBMS_WAY ["1. 전통 RDBMS: 정규화 분리 저장 후 읽을 때 JOIN"]
+        direction LR
+        T_ORD[("주문 테이블")]:::storage
+        T_ITEM[("주문상품 테이블")]:::storage
+        T_JOIN["런타임 JOIN 연산"]:::process
+        T_ORD --> T_JOIN
+        T_ITEM --> T_JOIN
+    end
+
+    subgraph MONGO_WAY ["2. MongoDB (WiredTiger + BSON): 계층 구조 통째로 단일 블록 저장"]
+        direction LR
+        B_IDX["B-Tree Index<br/>_id = 101 즉시 탐색"]:::cloud
+        BSON_DOC[("단일 BSON Document (주소 0x3000)<br/>{ _id: 101, items: [{...}, {...}], shipping: {...} }")]:::storage
+        B_IDX -->|"JOIN 및 Gather 없이 1회 I/O로 완제품 반환"| BSON_DOC
+    end
+```
+<p align="center"><em>Figure 11: RDBMS의 정규화 및 런타임 JOIN 구조와 MongoDB의 BSON 문서 단위 Pre-Joined 저장 구조 비교</em></p>
+
+### 5.1 저장 및 메모리 구조: Columnar도 일반 Row도 아닌 `BSON` 문서 덩어리
+
+하나의 주문 데이터(주문 기본 정보 + 주문한 상품 3개 + 배송지 정보)를 다룰 때 각 엔진의 물리적 저장 방식은 완전히 다르다.
+- 전통 RDBMS(Oracle, MySQL): `주문 테이블`, `주문상품 테이블(3줄)`, `배송지 테이블`로 쪼개어 따로 저장하고 읽을 때 `JOIN`한다.
+- Columnar 분석 엔진(Parquet, ClickHouse, Snowflake): 모든 필드를 세로 컬럼 배열로 분해해서 저장한다. 전체 매출 합계(`SUM`)는 초고속이지만, 특정 주문 1건의 전체 정보를 다시 모으려면(Gather) 메모리 수십 군데를 점프해야 한다.
+- MongoDB(`WiredTiger` 엔진 + `BSON` 포맷): JSON 텍스트를 그대로 쓰지 않고, 내부적으로 `BSON(Binary JSON)`이라는 이진 포맷으로 변환해 저장한다. 앞서 본 Spark의 `UnsafeRow`처럼 `BSON` 역시 각 필드 앞에 데이터 타입과 바이트 길이(Length Prefix)를 숫자로 적어두어, 원하는 필드를 찾을 때 문자열 파싱 없이 바이트 길이만큼 포인터를 건너뛰며 빠르게 읽는다. 무엇보다 주문 1건에 딸린 상품 배열과 배송지 객체를 쪼개지 않고 디스크와 메모리의 연속된 한 덩어리에 통째로 붙여 둔다.
+
+### 5.2 조인과 재조립 병목을 피하는 MongoDB의 해법과 3대 특장점
+
+MongoDB의 핵심 설계 철학은 "읽을 때 비싼 JOIN이나 배열 재조립(Gather)을 하지 말고, 애초에 디스크에 쓸 때 화면(API)에서 함께 보여줄 데이터들을 하나의 문서(Document) 안에 중첩 배열과 객체로 미리 합쳐서(Pre-Joined / Embedding) 저장하자"는 것이다.
+
+1. 무조인(Zero-Join) 단건 조회(Point Lookup) 및 쓰기 속도:
+   애플리케이션 코드(Java, Node.js, Python)에서 다루는 객체(Object/List/Map) 모양과 디스크에 저장되는 `BSON` 문서 모양이 1:1로 일치한다. 상품 상세 페이지를 띄울 때 RDBMS처럼 4-5개 테이블을 조인할 필요 없이, `product_id`를 B-Tree 인덱스로 딱 한 번 찌르면 단 1번의 메모리/디스크 접근만으로 옵션 배열과 브랜드 정보가 완제품 형태로 반환된다(1-5ms 이내 응답).
+2. 유연한 스키마(Dynamic Schema)와 중첩 배열 인덱싱(Multikey Index):
+   이커머스 상품처럼 화장품(`피부타입/용량`), 의류(`소재/세탁법`), 가전(`소비전력`)마다 속성(컬럼)이 수백 개씩 다른 도메인을 RDBMS나 Parquet, ClickHouse에 넣으려면 수백 개의 `NULL` 컬럼을 만들거나 스키마 변경 작업을 반복해야 한다. 반면 MongoDB는 문서마다 서로 다른 필드를 자유롭게 가질 수 있으면서도, 문서 내부의 중첩 배열 원소(`items.name`)에 바로 B-Tree 인덱스(Multikey Index)를 걸어 고속 검색을 수행한다.
+3. 엔진에 내장된 수평 확장성(Auto-Sharding):
+   단일 서버 디스크 한계를 넘어설 때 애플리케이션이 직접 분산을 구현해야 하는 일반 RDBMS와 달리, MongoDB는 `Shard Key` 기준으로 여러 대의 서버에 데이터를 자동 분산하고 라우팅(`mongos`)하는 구조가 엔진 코어에 내장되어 있다.
+
+### 5.3 반대로 대용량 통계 분석(Spark, ClickHouse 영역)에서 MongoDB가 느린 이유
+
+그렇다면 왜 MongoDB 하나로 모든 통계 분석까지 다 처리하지 않고 Spark나 Snowflake, ClickHouse를 따로 두는 것일까? 앞서 살펴본 디스크 I/O와 CPU Cache Line, Shuffle 체크포인트 원리를 대입하면 그 한계가 바로 드러난다.
+
+1. Column Projection 불가로 인한 디스크 I/O 낭비:
+   MongoDB의 `WiredTiger` 스토리지 엔진은 문서(`BSON`) 전체를 하나의 단위로 묶어 디스크 페이지에 저장한다. 만약 1억 건의 주문 문서에서 4바이트짜리 `배송비` 숫자 하나만 평균 내고 싶어도, 필요한 컬럼만 골라 읽는 Column Projection이 불가능하여 주문자 이름, 상품 배열, 주소 텍스트가 다 들어있는 수 킬로바이트짜리 무거운 `BSON` 문서 1억 개 전체를 디스크에서 다 읽어들여야 한다.
+2. CPU Cache Line 오염과 하드웨어 SIMD 불가:
+   메모리(WiredTiger Cache)에 올라온 뒤에도 64바이트 CPU Cache Line 안에 온갖 텍스트 필드가 섞여 들어오며(Cache Pollution), 문서마다 필드 위치가 달라 ClickHouse처럼 특정 숫자만 배열로 모아 CPU SIMD로 16개씩 동시 계산하는 것이 물리적으로 불가능하다.
+3. Shuffle 파일 체크포인트 부재로 인한 대규모 분산 조인(`$lookup`)의 한계:
+   MongoDB에도 조인 연산자(`$lookup`)가 존재하지만, 이는 소량의 문서를 결합할 때 쓰는 용도다. 앞서 `3.3절`에서 살펴본 Spark의 Shuffle 파일 체크포인트(`.data`/`.index` 디스크 세이브)나 외부 정렬 병합(External Sort-Merge) 체계가 없기 때문에, 수억 건짜리 두 컬렉션을 조인하면 메모리 제한에 걸려 작업이 중단된다.
+
+---
+
+## 6. 요약 및 전체 데이터 파이프라인 역할 분담
+
+지금까지 살펴본 모든 엔진의 내부 메커니즘과 실무 아키텍처상의 역할을 한눈에 비교하면 다음과 같다.
+
+| 구분 | MongoDB (Document OLTP) | Apache Spark (분산 배치/ETL) | Snowflake (클라우드 MPP DW) | ClickHouse (실시간 OLAP) |
+| :--- | :--- | :--- | :--- | :--- |
+| 기본 데이터 단위 | 계층형 문서 (`BSON` 통째 저장) | 행 단위 이진 포맷 (`UnsafeRow`) | 불변 컬럼 파일 (`Micro-partition`) | 물리 정렬 컬럼 블록 (`MergeTree`) |
+| 인메모리 연산 방식 | B-Tree 탐색 및 문서 단위 조작 | Row 루프 (Photon/Gluten 시 SIMD) | C++ Columnar Vectorized (SIMD) | C++ Columnar Vectorized (SIMD) |
+| 조인 및 Shuffle | 소량 `$lookup` (대규모 Shuffle 불가) | 로컬 디스크 `.data/.index` 체크포인트 | 인메모리 스트리밍 (부족 시 S3 Spill) | 인메모리 해시 조인 (대규모 시 OOM 위험) |
+| 가장 빠른 작업 | 특정 ID 1건의 복합 객체 즉시 조회/수정 | 수십 TB 비정형 정제 및 다단계 대규모 조인 | 복잡한 다중 테이블 조인 및 전사 BI 분석 | 단일/소수 넓은 테이블 초고속 실시간 집계 |
+| 가장 취약한 작업 | 전체 문서를 다 읽어야 하는 컬럼 통계 | 0.1초 내 응답해야 하는 짧은 단건 조회 | 비정형 코드 제어 및 초단기 포인트 조회 | 무거운 다중 테이블 조인 및 빈번한 단건 수정 |
+
+결국 각 엔진의 메모리 레이아웃과 디스크 저장 구조가 곧 그 엔진이 가장 잘하는 역할을 결정한다. 현대 데이터 플랫폼이 하나의 만능 DB만 쓰지 않고 아래와 같이 파이프라인을 구성하는 이유가 바로 여기에 있다.
+
+1. 실시간 서비스 계층 (`MongoDB` / `RDBMS`):
+   고객이 앱에서 상품을 조회하고 장바구니에 담아 주문하는 실시간 트랜잭션은 무조인 단건 조회(`BSON`)와 스키마 유연성이 뛰어난 MongoDB나 RDBMS가 1-5ms 내에 처리한다.
+2. 스토리지 및 테이블 포맷 계층 (`Parquet` + `Apache Iceberg` / `Delta Lake`):
+   운영 DB에서 발생한 데이터 변경 내역(CDC)을 추출해 S3의 컬럼형 파일(Parquet)로 쌓고, 그 위에 파일별 통계 목차(Manifest)와 트랜잭션 기능을 제공하는 Iceberg나 Delta Lake 계층을 얹는다.
+3. 대규모 정제 및 배치 조인 계층 (`Apache Spark` + `Photon` / `Gluten`):
+   수십 테라바이트의 원본 로그와 여러 도메인 테이블을 묶는 무거운 다단계 조인·집계·머신러닝 전처리는, 로컬 디스크 Shuffle 파일 체크포인트(`.data`/`.index`)를 통해 노드 장애나 메모리 한계에도 끝까지 배치를 완주해 내는 Spark가 담당한다.
+4. 고속 분석 및 서빙 계층 (`Snowflake` / `ClickHouse`):
+   Spark가 정제해 둔 마트 테이블을 바탕으로, 복잡한 다중 테이블 전사 BI 분석은 Snowflake가, 대고객 실시간 통계 대시보드와 로그 집계는 C++ SIMD와 로컬 SSD Sparse Index를 극대화한 ClickHouse가 서브초(Sub-second) 단위로 응답한다.
