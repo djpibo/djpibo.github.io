@@ -153,15 +153,15 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     participant Main as 메인 Query Block<br/>(T.country = 'FRANCE')
-    participant Opt as Query Optimizer
+    participant Optimizer as Query Optimizer
     participant Sub as Subquery / WITH Block<br/>(A.birth_city = 'PARIS' + GROUP BY)
 
-    Main->>Opt: 1. 메인 조건 통계 전달 (프랑스 영화)
-    Sub->>Opt: 2. 서브쿼리 조건 통계 전달 (파리 출생 배우)
+    Main->>Optimizer: 1. 메인 조건 통계 전달 (프랑스 영화)
+    Sub->>Optimizer: 2. 서브쿼리 조건 통계 전달 (파리 출생 배우)
 
-    Note over Opt: Query Block 경계벽 발생<br/>Histogram 소멸 및 블록 간 상관관계 인지 불가
+    Note over Optimizer: Query Block 경계벽 발생<br/>Histogram 소멸 및 블록 간 상관관계 인지 불가
 
-    Opt->>Opt: 3. 두 조건을 완전 독립 사건(Independence)으로 곱연산
+    Optimizer->>Optimizer: 3. 두 조건을 완전 독립 사건(Independence)으로 곱연산
     Note over Main,Sub: 결과: 실제 일치 확률이 높은데도 Cardinality를 1건으로 과소평가 -> NL Join 오작동
 ```
 <p align="center"><em>Figure 3: Query Block 경계에서 통계가 단절되어 상관관계가 누락되는 시퀀스</em></p>
