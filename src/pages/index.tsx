@@ -28,6 +28,17 @@ const FILTER_TOPICS: { label: string; value: 'all' | CategorySlug }[] = [
 const ARTICLES: ArticleItem[] = [
   // 2026. 11
   {
+    id: 'why-enterprises-still-choose-oracle-over-postgresql',
+    category: 'Database Engine',
+    categorySlug: 'database-engine',
+    title: '2026년에도 대기업이 PostgreSQL 대신 여전히 Oracle을 선택하는 이유: 아티클 요약과 DBA 관점의 회고',
+    desc: 'Closed Source의 답답함과 오픈소스 PostgreSQL의 투명성, 그럼에도 대기업 조직이 Oracle의 면책 구조와 SLA를 선택하는 경제적·아키텍처적 이유를 정리한다.',
+    link: '/docs/dbms/distributed/why-enterprises-still-choose-oracle-over-postgresql',
+    date: '2026. 11. 21',
+    monthKey: '2026. 11',
+    readTime: '6 min',
+  },
+  {
     id: 'mapreduce-spark-distributed-db',
     category: 'Database Engine',
     categorySlug: 'database-engine',
