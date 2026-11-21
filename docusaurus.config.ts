@@ -84,19 +84,24 @@ const config: Config = {
     mermaid: {
       theme: {light: 'neutral', dark: 'dark'},
       options: {
-        look: 'handDrawn',
-        handDrawnSeed: 42,
-        fontFamily: "'Patrick Hand', 'Poor Story', 'MaruBuri', cursive, sans-serif",
+        look: 'classic',
+        fontFamily: "'Inter', 'MaruBuri', -apple-system, BlinkMacSystemFont, sans-serif",
         flowchart: {
           curve: 'basis',
           padding: 16,
           nodeSpacing: 45,
-          rankSpacing: 55,
+          rankSpacing: 50,
           htmlLabels: true,
         },
+        sequence: {
+          mirrorActors: false,
+          messageMargin: 38,
+          boxMargin: 12,
+          noteMargin: 12,
+        },
         themeVariables: {
-          fontSize: '15px',
-          lineColor: '#7c8594',
+          fontSize: '14px',
+          lineColor: '#8b949e',
         },
       },
     },

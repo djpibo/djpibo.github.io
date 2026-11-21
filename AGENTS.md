@@ -55,21 +55,28 @@
 
 ## 4. 아키텍처 및 시스템 도식화 규칙 (Architecture Diagram Guideline)
 1. **문서(Docusaurus)와 채팅 인터페이스(Chat UI)의 도식화 분리**:
-   - **Docusaurus 문서 파일(.md) 작성 시**: 데이터 구조, 블록 물리 배치, 컴포넌트 간 상호작용은 Docusaurus 호환 Mermaid 코드로 작성한다.
+   - **Docusaurus 문서 파일(.md) 작성 시**: 데이터 구조, 컴포넌트 간 상호작용, 의사결정 분기는 Docusaurus 호환 Mermaid 코드로 작성한다.
    - **채팅 창(Chat UI) 답변 시 (★ 필수)**:
      - 채팅 인터페이스는 Mermaid 렌더링을 지원하지 않으므로 **Mermaid 코드 블록 생성을 전면 금지**한다.
      - 대신 직관적인 **아스키 텍스트(ASCII Art, 트리 형태 `+--`, 화살표 `->`, `[Box]` 등)**로 직접 도식화한다.
 2. **LaTeX 수식 및 특수 기호 표기 금지 (Chat UI)**:
    - `$...$`, `\longleftrightarrow`, `\bowtie`, `\binom{n}{k}` 등의 raw LaTeX 수식 문법을 일체 쓰지 않는다(채팅창에서 렌더링되지 않고 깨져서 노출됨).
    - 일반 텍스트 기호(`->`, `<->`, `조인`, `*`, 괄호 등)를 사용하여 누구나 바로 읽을 수 있게 직관적으로 표기한다.
-3. **좌우(LR) 데이터 파이프라인 흐름 지향 (문서용 Mermaid 기준)**:
-   - 세로(TD) 단순 나열보다, 유입(Source/Client) → 가공(Engine/Processor) → 영속(Storage/Buffer)의 흐름이 한눈에 보이는 `flowchart LR` 배치를 기본으로 사용한다.
-4. **시맨틱 도형 및 파스텔 팔레트 표준 적용 (문서용 Mermaid 기준)**:
-   - 스토리지/DB/큐: 원통형 `[(...)]` + Green 계열 (`fill:#E8F5E9, stroke:#4CAF50, color:#1B5E20`)
-   - 내부 연산/프로세서: 사각 박스 `[...]` + Yellow 계열 (`fill:#FFF9C4, stroke:#FBC02D, color:#5D4037`)
-   - 외부 서비스/클라우드: 캡슐/클라우드 `(["..."])` + Blue 계열 (`fill:#E1F5FE, stroke:#0288D1, color:#01579B`)
-   - 코어 엔티티/컨테이너: White/Card (`fill:#FFFFFF, stroke:#424242, color:#212121`)
-5. **데이터 페이로드(Schema/Data) 및 캡션 명시**:
-   - 화살표 연결선 위에는 단순 화살표 대신 전달되는 데이터 스키마 또는 작업(`|"[Neil, Sotto Mare]"|`, `|"Merge datasets"|`)을 표기한다.
-   - 다이어그램 하단에는 반드시 `<p align="center"><em>Figure X: [설명]</em></p>` 또는 `[그림 X: 설명]` 캡션을 명시한다.
+3. **시퀀스 다이어그램(`sequenceDiagram`)과 Decision Tree(`flowchart TD`) 우선 원칙 (★ 핵심)**:
+   - 복잡한 박스 나열이나 가로로 긴 `flowchart LR` 대신, 독자가 한눈에 인과관계와 흐름을 파악할 수 있는 **Sequence Diagram** 또는 **Decision Tree(`flowchart TD`)**를 기본으로 사용한다.
+   - **시간 순서, 컴포넌트 간 요청/응답, 파이프라인 단계 전달, 장애 복구 흐름**: `sequenceDiagram`을 사용한다 (`participant`, `Note over`, `alt/else` 블록 적극 활용).
+   - **조건 분기, 아키텍처 선택 기준, 원인-결과 트리, 계층 구조**: `flowchart TD` 기반의 Decision Tree(마름모 조건 노드 `{...}` 및 상하 계층 분기)를 사용한다.
+4. **핵심 문구의 간선(Edge Label) 배치 금지 원칙 (★ 핵심)**:
+   - `-->|"조인 조건"|`, `-->|"블록 간 상관관계 인지 불가"|`처럼 중요한 핵심 개념이나 원인 설명을 얇은 화살표 간선 위에 올려두면 시각적으로 강조되지 않고 가독성이 떨어진다.
+   - 핵심 원인·제약·결과 문구는 반드시 **독립된 노드 박스** 또는 **`sequenceDiagram`의 `Note over` / 강조 메시지**로 배치한다.
+   - `flowchart`의 간선(Edge) 위에는 `Yes` / `No`, `성공` / `실패` 같은 극도로 짧은 분기 표시만 허용한다.
+5. **시각 스타일 표준 (빗금무늬 금지 및 솔리드 파스텔 유지)**:
+   - Mermaid 렌더링은 `look: 'classic'`(깔끔한 단색 솔리드 채우기 + 둥근 모서리)을 유지하며, 텍스트 가독성을 해치는 `handDrawn` 빗금무늬(hachure)는 사용하지 않는다.
+   - 시맨틱 컬러 팔레트(단색 솔리드):
+     - 스토리지/DB/정상 결과: Green 계열 (`fill:#E8F5E9, stroke:#4CAF50, color:#1B5E20`)
+     - 내부 연산/판단 분기/주의: Yellow 계열 (`fill:#FFF9C4, stroke:#FBC02D, color:#5D4037`)
+     - 외부 서비스/클라우드/요청: Blue 계열 (`fill:#E1F5FE, stroke:#0288D1, color:#01579B`)
+     - 병목/오류/차단 강조: Red 계열 (`fill:#FFEBEE, stroke:#E53935, color:#B71C1C`)
+6. **다이어그램 캡션 명시**:
+   - 다이어그램 하단에는 반드시 `<p align="center"><em>Figure X: [설명]</em></p>` 캡션을 명시한다.
 

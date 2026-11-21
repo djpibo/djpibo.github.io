@@ -2,7 +2,7 @@
  * Google Developers Blog inspired Theme CSS
  */
 
-@import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Patrick+Hand&family=Poor+Story&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 /* MaruBuri Web Fonts */
 @font-face {
@@ -11,7 +11,7 @@
   font-style: normal;
   font-display: swap;
   src: url('/fonts/maruburi/MaruBuri-ExtraLight.otf') format('opentype'),
-       url('/fonts/maruburi/MaruBuri-ExtraLight.ttf') format('truetype');
+    url('/fonts/maruburi/MaruBuri-ExtraLight.ttf') format('truetype');
 }
 
 @font-face {
@@ -20,7 +20,7 @@
   font-style: normal;
   font-display: swap;
   src: url('/fonts/maruburi/MaruBuri-Light.otf') format('opentype'),
-       url('/fonts/maruburi/MaruBuri-Light.ttf') format('truetype');
+    url('/fonts/maruburi/MaruBuri-Light.ttf') format('truetype');
 }
 
 @font-face {
@@ -29,7 +29,7 @@
   font-style: normal;
   font-display: swap;
   src: url('/fonts/maruburi/MaruBuri-Regular.otf') format('opentype'),
-       url('/fonts/maruburi/MaruBuri-Regular.ttf') format('truetype');
+    url('/fonts/maruburi/MaruBuri-Regular.ttf') format('truetype');
 }
 
 @font-face {
@@ -38,7 +38,7 @@
   font-style: normal;
   font-display: swap;
   src: url('/fonts/maruburi/MaruBuri-SemiBold.otf') format('opentype'),
-       url('/fonts/maruburi/MaruBuri-SemiBold.ttf') format('truetype');
+    url('/fonts/maruburi/MaruBuri-SemiBold.ttf') format('truetype');
 }
 
 @font-face {
@@ -47,14 +47,23 @@
   font-style: normal;
   font-display: swap;
   src: url('/fonts/maruburi/MaruBuri-Bold.otf') format('opentype'),
-       url('/fonts/maruburi/MaruBuri-Bold.ttf') format('truetype');
+    url('/fonts/maruburi/MaruBuri-Bold.ttf') format('truetype');
 }
 
 /* Global Korean Typography & Natural Word Wrap */
 html,
 body,
-h1, h2, h3, h4, h5, h6,
-p, span, a, li, blockquote,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p,
+span,
+a,
+li,
+blockquote,
 .markdown,
 .navbar__item,
 .footer {
@@ -66,7 +75,7 @@ p, span, a, li, blockquote,
   --ifm-font-family-base: 'MaruBuri', 'Google Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   --ifm-heading-font-family: 'MaruBuri', 'Google Sans', 'Inter', sans-serif;
   --ifm-font-family-monospace: 'JetBrains Mono', SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  
+
   /* Google Palette */
   --google-blue: #1a73e8;
   --google-blue-hover: #1557b0;
@@ -178,22 +187,25 @@ p, span, a, li, blockquote,
   width: 8px;
   height: 8px;
 }
+
 ::-webkit-scrollbar-track {
   background: var(--ifm-background-color);
 }
+
 ::-webkit-scrollbar-thumb {
   background: var(--g-border-color);
   border-radius: 4px;
 }
+
 ::-webkit-scrollbar-thumb:hover {
   background: var(--google-grey-700);
 }
 
-/* Hand-drawn Excalidraw-inspired Mermaid Container */
+/* Clean Solid Rounded Mermaid Container */
 .docusaurus-mermaid-container {
   background: var(--g-surface-card);
   border: 1px solid var(--g-border-color);
-  border-radius: 14px;
+  border-radius: 12px;
   padding: 1.5rem 1.25rem;
   margin: 1.5rem 0 0.75rem 0;
   display: flex;
@@ -204,12 +216,18 @@ p, span, a, li, blockquote,
 .docusaurus-mermaid-container svg {
   max-width: 100%;
   height: auto;
-  font-family: 'Patrick Hand', 'Poor Story', 'MaruBuri', cursive, sans-serif !important;
+  font-family: 'Inter', 'MaruBuri', -apple-system, BlinkMacSystemFont, sans-serif !important;
+}
+
+.docusaurus-mermaid-container .node rect,
+.docusaurus-mermaid-container .cluster rect {
+  rx: 8px;
+  ry: 8px;
 }
 
 .docusaurus-mermaid-container .nodeLabel,
 .docusaurus-mermaid-container .edgeLabel,
 .docusaurus-mermaid-container .cluster-label {
-  font-family: 'Patrick Hand', 'Poor Story', 'MaruBuri', cursive, sans-serif !important;
-  letter-spacing: 0.01em;
+  font-family: 'Inter', 'MaruBuri', -apple-system, BlinkMacSystemFont, sans-serif !important;
+  font-weight: 500;
 }

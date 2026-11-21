@@ -17,28 +17,27 @@ reading_time: "약 11분"
 ## 1. 2편의 VLDB 논문 정리: Optimizer 실측 결과
 
 ```mermaid
-flowchart LR
+flowchart TD
     classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
     classDef process fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
     classDef cloud fill:#E1F5FE,stroke:#0288D1,color:#01579B;
+    classDef danger fill:#FFEBEE,stroke:#E53935,color:#B71C1C;
 
-    subgraph Classical ["전통적 Optimizer 구조"]
-        CE["1. Cardinality Estimation"]:::process
-        CM["2. Cost Model"]:::process
-        PE["3. Plan Space Enumeration"]:::process
-    end
+    Q(["SQL 입력 (다중 조건 및 3-5개 이상 조인)"]):::cloud
+    CE["1단계: Cardinality Estimation<br/>예상 행 수 추정"]:::process
+    CE_CHECK{"컬럼 간 Correlation / Skew<br/>정확히 반영되는가?"}:::process
+    CE_ERR["핵심 병목: 수 자릿수 과소평가 발생<br/>(실제 40,000행 -> 추정 300행)"]:::danger
 
-    subgraph Reality ["실측 검증 결과 (JOB 벤치마크)"]
-        CE_R[("수 자릿수 오차 폭증 / 주요 병목")]:::storage
-        CM_R[("영향력 제한적 / 단순 튜플 카운트와 유사")]:::cloud
-        PE_R[("DP 전수 탐색 유효 / 입력값 왜곡 시 오작동")]:::storage
-    end
+    CM["2단계: Cost Model<br/>비용 계산 (영향력 제한적, 입력값에 종속)"]:::cloud
+    PE["3단계: Plan Space Enumeration<br/>DP 전수 탐색 수행"]:::cloud
+    RES["최종 결과: 왜곡된 Cardinality로 인해<br/>Hash Join 대신 비효율 NL Join 선택"]:::danger
+    OK["정상 결과: 최적 조인 순서 및 방식 도출"]:::storage
 
-    CE -->|"오차가 엔진 전체로 전파"| CE_R
-    CM -->|"Cardinality 오류에 종속됨"| CM_R
-    PE -->|"왜곡된 비용을 기준으로 선택"| PE_R
+    Q --> CE --> CE_CHECK
+    CE_CHECK -->|"No (실세계 데이터)"| CE_ERR --> CM --> PE --> RES
+    CE_CHECK -->|"Yes (단일 조건)"| OK
 ```
-<p align="center"><em>Figure 1: 전통적인 Optimizer 구성 요소와 실측 검증 결과</em></p>
+<p align="center"><em>Figure 1: Query Optimizer 의사결정 흐름과 Cardinality 오차가 실행 계획 전체로 전파되는 구조</em></p>
 
 ### 1.1 기존 Benchmark의 문제점과 Join Order Benchmark(JOB)
 연구진은 TPC-H, TPC-DS 같은 기존 표준 Benchmark가 실행 엔진의 연산 처리량을 평가하는 데는 적합하지만, Optimizer의 경로 탐색을 검증하는 데는 한계가 있다고 분석했다.
@@ -152,31 +151,20 @@ flowchart LR
 일반적인 단일 블록 조인에 비해 Subquery와 WITH 절(CTE)이 포함된 SQL은 Query Block 경계가 생기므로 Optimizer의 오판 빈도가 높아진다.
 
 ```mermaid
-flowchart LR
-    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef process fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef entity fill:#FFFFFF,stroke:#424242,color:#212121;
+sequenceDiagram
+    participant Main as 메인 Query Block<br/>(T.country = 'FRANCE')
+    participant Opt as Query Optimizer
+    participant Sub as Subquery / WITH Block<br/>(A.birth_city = 'PARIS' + GROUP BY)
 
-    subgraph Outer ["메인 Query Block"]
-        direction TB
-        M_COND["WHERE T.country = 'FRANCE'"]:::entity
-    end
+    Main->>Opt: 1. 메인 조건 통계 전달 (프랑스 영화)
+    Sub->>Opt: 2. 서브쿼리 조건 통계 전달 (파리 출생 배우)
 
-    subgraph WALL ["Query Block 경계벽 (통계 단절)"]
-        direction TB
-        BARRIER["Histogram 소멸 / Independence 강제 적용"]:::process
-    end
+    Note over Opt: Query Block 경계벽 발생<br/>Histogram 소멸 및 블록 간 상관관계 인지 불가
 
-    subgraph Sub ["Subquery / WITH 절 Block"]
-        direction TB
-        S_COND["WHERE A.birth_city = 'PARIS'"]:::entity
-        S_GRP["GROUP BY C.movie_id"]:::storage
-    end
-
-    Outer ---|"조인 조건"| WALL
-    WALL ---|"블록 간 상관관계 인지 불가"| Sub
+    Opt->>Opt: 3. 두 조건을 완전 독립 사건(Independence)으로 곱연산
+    Note over Main,Sub: 결과: 실제 일치 확률이 높은데도 Cardinality를 1건으로 과소평가 -> NL Join 오작동
 ```
-<p align="center"><em>Figure 3: Query Block 경계벽에 의한 통계 및 상관관계 단절 구조</em></p>
+<p align="center"><em>Figure 3: Query Block 경계에서 통계가 단절되어 상관관계가 누락되는 시퀀스</em></p>
 
 ### 2.1 Subquery 처리 방식: Filter와 가상 View
 Subquery는 Query Transformation 과정을 거쳐 처리된다.

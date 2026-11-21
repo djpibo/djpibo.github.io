@@ -19,32 +19,27 @@ MapReduce와 Spark의 차이를 흔히 Disk 기반과 Memory 기반의 차이로
 두 엔진은 워커 노드에서 Task를 띄우고 메모리를 다루는 물리적 방식부터 다르다.
 
 ```mermaid
-flowchart LR
-    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef process fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef cloud fill:#E1F5FE,stroke:#0288D1,color:#01579B;
+sequenceDiagram
+    participant Master as NodeManager / Spark Driver
+    participant MR as MapReduce (1회용 JVM)
+    participant SP as Spark Executor (재사용 JVM)
+    participant Mem as Off-Heap Memory (UnsafeRow)
 
-    subgraph MR ["MapReduce: 1회용 JVM 생성 및 종료 모델"]
-        direction LR
-        NM1(["NodeManager"]):::cloud
-        JVM1["JVM Process 1<br/>Task 1 실행 후 즉시 종료"]:::process
-        JVM2["JVM Process 2<br/>Task 2 실행 후 즉시 종료"]:::process
-        HEAP1[("On-Heap Memory<br/>Java 객체 생성")]:::storage
-        NM1 -->|"OS 프로세스 Fork (수 초)"| JVM1
-        NM1 -->|"OS 프로세스 Fork (수 초)"| JVM2
-        JVM1 -->|"100MB 버퍼 채운 후 종료"| HEAP1
+    rect rgb(255, 249, 196)
+        Note over Master,MR: MapReduce: Task마다 JVM 새로 기동 (Process-per-Task)
+        Master->>MR: 1. OS 프로세스 Fork 및 Class Loading (수 초 소요)
+        MR-->>MR: 2. On-Heap Java 객체 생성 및 100MB 버퍼 Spill
+        Note over MR: Task 1 완료 즉시 JVM 프로세스 종료 (JIT 최적화 소멸)
     end
 
-    subgraph SP ["Spark: Executor JVM 유지 및 Thread 재사용 모델"]
-        direction LR
-        DRV(["Spark Driver"]):::cloud
-        EXEC["Executor JVM (종료 안 됨)<br/>내부 Thread Pool 재사용"]:::process
-        TUNG[("Off-Heap Memory<br/>UnsafeRow Binary")]:::storage
-        DRV -->|"LaunchTask RPC (수 ms)"| EXEC
-        EXEC -->|"sun.misc.Unsafe 포인터 연산"| TUNG
+    rect rgb(225, 245, 254)
+        Note over Master,Mem: Spark: 기존 JVM Thread Pool 재사용 (Long-lived Executor)
+        Master->>SP: 1. LaunchTask RPC 패킷 전송 (수 ms 소요)
+        SP->>Mem: 2. sun.misc.Unsafe로 Off-Heap 바이너리 직접 연산
+        Note over SP: JVM 유지 -> 다음 Task 즉시 할당 & JIT 기계어 누적 재사용
     end
 ```
-<p align="center"><em>Figure 1: MapReduce의 1회용 Task JVM 모델과 Spark의 재사용형 Executor JVM 모델 비교</em></p>
+<p align="center"><em>Figure 1: MapReduce의 1회용 Task JVM 모델과 Spark의 재사용형 Executor JVM 모델 시퀀스 비교</em></p>
 
 ### 1.1 Task 실행 모델: 1회용 JVM 프로세스 vs Executor Thread Pool
 
@@ -158,32 +153,26 @@ public long getLong(int ordinal) {
 - 또한 파일 맨 끝(`Footer`)에는 각 구역별 최솟값(`Min`)과 최댓값(`Max`) 통계가 적혀 있다. 덕분에 Spark가 Parquet 파일을 읽을 때는 쿼리에 필요한 컬럼 구역만 골라서 읽고(Column Projection), 조건에 맞지 않는 데이터 블록은 아예 건너뛰는(Skipping) 고속 스캔이 가능하다.
 
 ```mermaid
-flowchart LR
-    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef process fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef cloud fill:#E1F5FE,stroke:#0288D1,color:#01579B;
+sequenceDiagram
+    participant Disk as HDFS / Parquet Storage
+    participant Eng as 연산 엔진 (MapReduce / Spark)
+    participant Mid as 중간 저장소 (HDFS / Local Disk)
 
-    subgraph MR_PIPE ["MapReduce: Job마다 HDFS 디스크 기록 강제"]
-        direction LR
-        HDFS_IN[("HDFS Input")]:::storage
-        MR_J1["Job 1: Map -> Reduce"]:::process
-        HDFS_MID[("HDFS 중간 저장<br/>3중 네트워크 복제")]:::storage
-        MR_J2["Job 2: Map -> Reduce"]:::process
-        HDFS_IN -->|"Block Read"| MR_J1
-        MR_J1 -->|"Disk & Network Write"| HDFS_MID
-        HDFS_MID -->|"다시 전체 Read"| MR_J2
+    rect rgb(255, 235, 238)
+        Note over Disk,Mid: MapReduce: Job 단계마다 HDFS 강제 기록 (높은 I/O 병목)
+        Disk->>Eng: Job 1 입력 블록 전체 Read
+        Eng->>Mid: Job 1 결과를 HDFS에 강제 기록 (3중 네트워크 복제)
+        Mid->>Eng: Job 2 시작 시 HDFS에서 다시 전체 Read
     end
 
-    subgraph SP_PIPE ["Spark: 단일 Stage 내 Whole-Stage CodeGen Pipelining"]
-        direction LR
-        SP_IN[("Parquet Input<br/>필요 컬럼만 스캔")]:::storage
-        FUSED["단일 JVM 루프 (Operator Fusion)<br/>Filter1 -> Map1 -> Filter2 -> Map2"]:::process
-        SHUF[("Local Shuffle File<br/>Stage 경계에서만 기록")]:::storage
-        SP_IN -->|"Batch Read"| FUSED
-        FUSED -->|"레지스터/CPU 캐시 내 즉시 전달"| SHUF
+    rect rgb(232, 245, 233)
+        Note over Disk,Mid: Spark: 단일 Stage 내 Whole-Stage CodeGen Pipelining
+        Disk->>Eng: Parquet에서 필요한 컬럼만 Batch Read
+        Note over Eng: 단일 while 루프 합성 (Filter1 -> Map1 -> Filter2 -> Map2)<br/>중간 버퍼 생성 없이 CPU 레지스터/캐시에서 즉시 통과
+        Eng->>Mid: Stage 경계(Shuffle)에서만 Local Disk에 1회 기록
     end
 ```
-<p align="center"><em>Figure 4: MapReduce의 단계별 HDFS 기록 구조와 Spark의 Whole-Stage CodeGen 기반 In-Memory Pipelining 비교</em></p>
+<p align="center"><em>Figure 4: MapReduce의 단계별 HDFS 기록 구조와 Spark의 Whole-Stage CodeGen 기반 In-Memory Pipelining 시퀀스 비교</em></p>
 
 ### 2.1 실행 그래프와 연산 결합: 2-Stage 강제 분리 대 DAG Operator Fusion
 
@@ -319,36 +308,27 @@ flowchart LR
 흔히 "Spark에서 Parquet(컬럼형 파일)를 쓰니까 메모리 연산도 끝까지 컬럼형으로 동작할 것"이라고 생각하기 쉽다. 하지만 순수 오픈소스 Spark의 SQL 실행 계획(Physical Plan)을 열어보면 파일 스캔 직후에 `ColumnarToRow`라는 연산자가 자동으로 끼어드는 것을 볼 수 있다.
 
 ```mermaid
-flowchart LR
+flowchart TD
     classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
     classDef process fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
     classDef cloud fill:#E1F5FE,stroke:#0288D1,color:#01579B;
+    classDef danger fill:#FFEBEE,stroke:#E53935,color:#B71C1C;
 
-    subgraph PARQ_FILE ["1. Parquet 물리 구조 (Disk)"]
-        direction LR
-        RG[("Row Group (128MB)<br/>Column Chunk A | Column Chunk B<br/>+ Footer (Min/Max 통계)")]:::storage
-    end
+    PARQ[("Parquet 파일 (Disk)<br/>Row Group 내 필요한 Column Chunk만 I/O")]:::storage
+    DEC{"실행 엔진 유형"}:::process
 
-    subgraph SPARK_VANILLA ["2. 기본 Spark Catalyst 엔진 (Columnar -> Row 강제 변환)"]
-        direction LR
-        V_READ["Vectorized Reader<br/>ColumnarBatch (4096행)"]:::cloud
-        C2R["ColumnarToRowExec<br/>가로 행(UnsafeRow)으로 재조립"]:::process
-        OP_ROW["Filter / HashJoin / Aggregate<br/>Iterator[UnsafeRow] (1행씩 루프)"]:::process
-        V_READ -->|"배열 전달"| C2R
-        C2R -->|"1행씩 변환 (CPU 소모)"| OP_ROW
-    end
+    V_READ["Vectorized Reader<br/>ColumnarBatch (4,096행 배열 로드)"]:::cloud
+    C2R["병목: ColumnarToRowExec<br/>세로 배열을 가로 UnsafeRow로 1행씩 재조립<br/>(전체 CPU의 20-40% 소모)"]:::danger
+    OP_ROW["기본 Catalyst 코어 연산자<br/>Iterator[UnsafeRow] (1행씩 스칼라 루프)"]:::process
 
-    subgraph SPARK_NATIVE ["3. Photon / Apache Gluten (End-to-End Columnar)"]
-        direction LR
-        N_READ["Native Parquet Reader<br/>ColumnarBatch 유지"]:::cloud
-        N_OP["C++ SIMD Filter / Join / Agg<br/>전 구간 Column Vector 연산"]:::process
-        N_READ -->|"ColumnarToRow 생략"| N_OP
-    end
+    N_READ["Native Parquet Reader<br/>ColumnarBatch 상태 그대로 유지"]:::cloud
+    N_OP["C++ SIMD Vectorized 연산<br/>ColumnarToRow 생략 (Filter/Join/Agg 전 구간)"]:::storage
 
-    RG -->|"필요한 Column Chunk만 I/O"| V_READ
-    RG -->|"필요한 Column Chunk만 I/O"| N_READ
+    PARQ --> DEC
+    DEC -->|"기본 Spark (JVM)"| V_READ --> C2R --> OP_ROW
+    DEC -->|"Photon / Apache Gluten (C++)"| N_READ --> N_OP
 ```
-<p align="center"><em>Figure 6: Parquet 파일 스캔 이후 기본 Spark 엔진의 ColumnarToRow 변환 구조와 Native 엔진(Photon/Gluten)의 차이</em></p>
+<p align="center"><em>Figure 6: Parquet 파일 스캔 이후 기본 Spark 엔진(ColumnarToRow)과 Native 엔진(Photon/Gluten)의 실행 분기</em></p>
 
 - 기본 Spark의 `VectorizedParquetRecordReader`는 Parquet 파일의 `Column Chunk`를 읽을 때 메모리에 `ColumnarBatch`(4,096개 행의 컬럼 배열 묶음) 형태로 빠르게 퍼 올린다.
 - 그러나 그 다음 단계인 기본 Catalyst 코어 연산자(`FilterExec`, `BroadcastHashJoinExec`, `HashAggregateExec` 등)는 입력과 출력이 행 단위 포맷인 `UnsafeRow`를 1건씩 주고받는 `Iterator[UnsafeRow]`로 설계되어 있다.
@@ -408,33 +388,27 @@ flowchart LR
 쉽게 비유하면, 게임에서 다음 스테이지(보스방)로 넘어가기 직전에 지금까지 진행한 상태를 로컬 디스크에 강제로 세이브(Save)해 두는 안전장치다.
 
 ```mermaid
-flowchart LR
-    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef process fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef cloud fill:#E1F5FE,stroke:#0288D1,color:#01579B;
+sequenceDiagram
+    participant S1 as Stage 1 (선행 연산 노드)
+    participant Disk as Local Disk (.data + .index)
+    participant S2 as Stage 2 (후행 연산 노드)
 
-    subgraph MPP_FAIL ["1. 체크포인트 없는 스트리밍 (Snowflake / ClickHouse / MongoDB $lookup)"]
-        direction LR
-        M_S1["Stage 1 (메모리)"]:::cloud
-        M_S2["Stage 2 (메모리)"]:::cloud
-        M_S3["Stage 3 (55분째 노드 1대 죽음)"]:::process
-        M_S1 -->|"디스크 기록 없이 직송"| M_S2
-        M_S2 -->|"디스크 기록 없이 직송"| M_S3
-        M_S3 -.->|"중간 파일 없음: 0분(Stage 1)부터 전체 재실행"| M_S1
+    rect rgb(255, 235, 238)
+        Note over S1,S2: 1. 체크포인트 없는 스트리밍 (Snowflake / ClickHouse / MongoDB $lookup)
+        S1->>S2: 디스크 기록 없이 네트워크 소켓으로 메모리 직접 스트리밍
+        Note over S2: 55분째 노드 1대 장애 발생!
+        S2-->>S1: 중간 세이브 파일 없음 -> 0분(Stage 1)부터 쿼리 전체 재실행
     end
 
-    subgraph SP_SAVE ["2. Spark의 Shuffle 파일 체크포인트 (.data + .index)"]
-        direction LR
-        S_S1["Stage 1 완료"]:::cloud
-        S_CHK[("로컬 디스크 세이브 파일<br/>shuffle.data (파티션별 데이터)<br/>shuffle.index (파티션별 위치 목차)")]:::storage
-        S_S2["Stage 2 (55분째 3번 Task 죽음)"]:::process
-        S_REC["다른 노드에서 3번 Task 1개만 재실행"]:::cloud
-        S_S1 -->|"로컬 디스크에 영속화"| S_CHK
-        S_CHK -->|"네트워크 Fetch"| S_S2
-        S_CHK -.->|".index 보고 3번 파티션만 다시 읽음 (5분 내 복구)"| S_REC
+    rect rgb(232, 245, 233)
+        Note over S1,S2: 2. Spark의 Shuffle 파일 체크포인트 기반 부분 복구
+        S1->>Disk: Stage 1 완료 시 shuffle.data + shuffle.index 영속화
+        Disk->>S2: 필요한 파티션 데이터 네트워크 Fetch
+        Note over S2: 55분째 3번 Task 장애 발생!
+        Disk->>S2: .index 목차로 3번 파티션만 다시 읽음 -> 죽은 Task 1개만 5분 내 복구
     end
 ```
-<p align="center"><em>Figure 8: 메모리 직송 스트리밍 엔진의 연쇄 실패 구조와 Spark의 Shuffle 파일 체크포인트(.data/.index) 기반 부분 복구 구조 비교</em></p>
+<p align="center"><em>Figure 8: 55분째 노드 장애 시 메모리 직송 엔진의 전체 재실행과 Spark Shuffle 체크포인트 기반 부분 복구 시퀀스 비교</em></p>
 
 1. 물리적 동작 — Stage가 끝날 때 로컬 디스크에 무엇을 기록하는가?
    Spark에서 `Filter -> Map`까지는 다른 서버로 데이터를 보낼 필요가 없으므로 메모리에서 쭉 흘러간다. 그러다 `JOIN`이나 `GROUP BY`처럼 다른 서버의 데이터와 섞어야 하는 경계선(Shuffle)을 만나면, 앞 단계(`Stage 1`)의 모든 서버는 계산 결과를 다음 단계(`Stage 2`) 서버의 메모리로 바로 쏘지 않고 무조건 자기 로컬 디스크에 두 개의 파일로 내려쓴다.
