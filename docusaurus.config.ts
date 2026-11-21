@@ -82,9 +82,9 @@ const config: Config = {
           type: 'docSidebar',
           sidebarId: 'tutorialSidebar',
           position: 'left',
-          label: 'Architecture & Docs',
+          label: 'Documents',
         },
-        {to: '/blog', label: 'RCA & Articles', position: 'left'},
+        {to: '/blog', label: 'Recents', position: 'left'},
         {
           href: 'https://github.com/djpibo',
           label: 'GitHub',
