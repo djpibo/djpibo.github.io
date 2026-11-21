@@ -20,7 +20,7 @@ interface ArticleItem {
 const FILTER_TOPICS: { label: string; value: 'all' | CategorySlug }[] = [
   { label: 'All', value: 'all' },
   { label: 'Database Engine', value: 'database-engine' },
-  { label: 'Production Tuning', value: 'production-tuning' },
+  { label: 'Tuning Case', value: 'production-tuning' },
   { label: 'AI Agent', value: 'ai-agent' },
   { label: 'CI/CD', value: 'ci-cd' },
 ];
@@ -75,7 +75,7 @@ const ARTICLES: ArticleItem[] = [
   },
   {
     id: 'batch-spm-tuning',
-    category: 'Production Tuning',
+    category: 'Tuning Case',
     categorySlug: 'production-tuning',
     title: '30분 주기 센터재고이동 배치의 실행 계획 왜곡 해결: Bind Peeking에서 SPM 긴급 처방까지',
     desc: '수주배분 배치 직후 발생한 실행 계획 왜곡 장애를 SQL Plan Management(SPM)로 고정하고 쿼리를 리팩토링한 프로덕션 튜닝 사례.',
@@ -130,7 +130,7 @@ const ARTICLES: ArticleItem[] = [
   },
   {
     id: 'oracle-sql-workload-event',
-    category: 'Production Tuning',
+    category: 'Tuning Case',
     categorySlug: 'production-tuning',
     title: 'Oracle SQL 업무시간 부하 및 이벤트 분석',
     desc: '평시 대비 대규모 프로모션 이벤트 기간의 시간대별 SQL 호출량, CPU 시간, 수행시간 분포와 Top 10 SQL 부하를 정량 분석한다.',
@@ -141,7 +141,7 @@ const ARTICLES: ArticleItem[] = [
   },
   {
     id: 'hourly-cpu-top-sql',
-    category: 'Production Tuning',
+    category: 'Tuning Case',
     categorySlug: 'production-tuning',
     title: '시간대별 CPU 높은 SQL 찾기',
     desc: '대규모 분기 프로모션 기간 AWR 및 ASH Delta 통계를 기반으로 시간대별 CPU Top SQL을 선별하고 비즈니스 로직 병목을 개선한 사례.',
@@ -152,7 +152,7 @@ const ARTICLES: ArticleItem[] = [
   },
   {
     id: 'inefficient-sql-patterns',
-    category: 'Production Tuning',
+    category: 'Tuning Case',
     categorySlug: 'production-tuning',
     title: '병목을 유발하는 SQL 비효율 패턴 4가지',
     desc: '대규모 트래픽 상황에서 CPU 급증과 응답 지연을 유발했던 4가지 대표 SQL 비효율 패턴과 개선 전후 지표를 정리한다.',
@@ -174,7 +174,7 @@ const ARTICLES: ArticleItem[] = [
   },
   {
     id: 'linguistic-vs-mathematical',
-    category: 'Production Tuning',
+    category: 'Tuning Case',
     categorySlug: 'production-tuning',
     title: '언어적 천재와 수학적 천재',
     desc: '장애 분석과 시스템 개선 과정에서 마주하는 직관적 서사 접근과 정량적 지표 검증 접근의 차이를 회고한다.',
@@ -285,13 +285,13 @@ export default function Home(): ReactNode {
   return (
     <Layout
       title="Engineering Traces"
-      description="Database Engine, Production Tuning, AI Agent, CI/CD technical archive">
+      description="Database Engine, Tuning Case, AI Agent, CI/CD technical archive">
       <main className={styles.mainContainer}>
         {/* Minimal Page Header */}
         <header className={styles.pageHeader}>
           <h1 className={styles.pageTitle}>Recent Posts</h1>
           <p className={styles.pageSubtitle}>
-            Database Engine, Production Tuning, AI Agent, CI/CD 관련 기술 분석과 운영 기록
+            Database Engine, Tuning Case, AI Agent, CI/CD 관련 기술 분석과 운영 기록
           </p>
         </header>
 
