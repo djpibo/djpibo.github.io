@@ -1,16 +1,16 @@
 ---
-slug: query-optimizer-cardinality-and-subquery-internals
+id: query-optimizer-cardinality-and-subquery-internals
 title: "쿼리 옵티마이저의 한계: 2편의 VLDB 논문 분석과 Subquery·WITH 절의 동작 원리"
-date: 2026-09-27
-authors: [deejay]
-tags: [optimization, troubleshooting]
+sidebar_label: VLDB 옵티마이저 한계와 Subquery·WITH
+sidebar_position: 2
+date: "2026년 9월 27일"
+reading_time: "약 11분"
 ---
 
 현업에서 복잡한 SQL을 튜닝하다 보면 실행 계획이 비효율적으로 수립되는 현상을 자주 마주한다. 관계형 데이터베이스의 Query Optimizer는 가능한 실행 경로를 모두 수치화하여 최적의 경로를 선택하도록 설계되었으나, 실제 운영 환경에서는 기대와 다르게 동작하는 경우가 많다.
 
 2015년 VLDB에 발표된 Viktor Leis et al.의 연구(*How Good Are Query Optimizers, Really?*)와 2025년 10주년 회고 논문은 관계형 데이터베이스 Optimizer의 핵심 컴포넌트를 분리하여 실측한 결과를 다룬다. 본 글에서는 두 편의 논문에서 확인된 Optimizer의 구조적 한계와 Plan Space의 트리 형상(Left-Deep Tree 대 Bushy Tree)을 정리하고, 이러한 한계가 두드러지게 나타나는 Subquery와 WITH 절(CTE)의 물리적 동작 원리를 살펴본다.
 
-<!--truncate-->
 
 ---
 

@@ -1,9 +1,10 @@
 ---
-slug: oracle-sql-workload-event-analysis
+id: oracle-sql-workload-event-analysis
 title: "Oracle SQL 업무시간 부하 및 이벤트 분석"
-date: 2026-09-06
-authors: [deejay]
-tags: [optimization, troubleshooting]
+sidebar_label: 업무시간 SQL 부하 및 이벤트 분석
+sidebar_position: 5
+date: "2026년 9월 6일"
+reading_time: "약 5분"
 ---
 
 # Oracle SQL 업무시간 부하 및 이벤트 분석
@@ -18,7 +19,6 @@ tags: [optimization, troubleshooting]
 - 이벤트: **2026-08-30 ~ 2026-09-05 (7일)**
 - 급증 기준: 이벤트 일평균 호출량이 평시 일평균보다 25% 이상 증가
 
-<!--truncate-->
 
 ## 데이터 해석 주의사항
 

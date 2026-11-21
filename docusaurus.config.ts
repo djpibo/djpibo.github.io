@@ -47,17 +47,7 @@ const config: Config = {
           sidebarPath: './sidebars.ts',
           editUrl: 'https://github.com/djpibo/djpibo.github.io/tree/main/',
         },
-        blog: {
-          showReadingTime: true,
-          feedOptions: {
-            type: ['rss', 'atom'],
-            xslt: true,
-          },
-          editUrl: 'https://github.com/djpibo/djpibo.github.io/tree/main/',
-          onInlineTags: 'throw',
-          onInlineAuthors: 'throw',
-          onUntruncatedBlogPosts: 'throw',
-        },
+        blog: false,
         theme: {
           customCss: './src/css/custom.css',
         },
@@ -84,13 +74,31 @@ const config: Config = {
           position: 'left',
           label: 'Documents',
         },
-        {to: '/blog', label: 'Recents', position: 'left'},
         {
           href: 'https://github.com/djpibo',
           label: 'GitHub',
           position: 'right',
         },
       ],
+    },
+    mermaid: {
+      theme: {light: 'neutral', dark: 'dark'},
+      options: {
+        look: 'handDrawn',
+        handDrawnSeed: 42,
+        fontFamily: "'Patrick Hand', 'Poor Story', 'MaruBuri', cursive, sans-serif",
+        flowchart: {
+          curve: 'basis',
+          padding: 16,
+          nodeSpacing: 45,
+          rankSpacing: 55,
+          htmlLabels: true,
+        },
+        themeVariables: {
+          fontSize: '15px',
+          lineColor: '#7c8594',
+        },
+      },
     },
     prism: {
       theme: prismThemes.github,

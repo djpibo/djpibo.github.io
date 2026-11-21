@@ -2,7 +2,7 @@
  * Google Developers Blog inspired Theme CSS
  */
 
-@import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Patrick+Hand&family=Poor+Story&display=swap');
 
 /* MaruBuri Web Fonts */
 @font-face {
@@ -187,4 +187,29 @@ p, span, a, li, blockquote,
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--google-grey-700);
+}
+
+/* Hand-drawn Excalidraw-inspired Mermaid Container */
+.docusaurus-mermaid-container {
+  background: var(--g-surface-card);
+  border: 1px solid var(--g-border-color);
+  border-radius: 14px;
+  padding: 1.5rem 1.25rem;
+  margin: 1.5rem 0 0.75rem 0;
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;
+}
+
+.docusaurus-mermaid-container svg {
+  max-width: 100%;
+  height: auto;
+  font-family: 'Patrick Hand', 'Poor Story', 'MaruBuri', cursive, sans-serif !important;
+}
+
+.docusaurus-mermaid-container .nodeLabel,
+.docusaurus-mermaid-container .edgeLabel,
+.docusaurus-mermaid-container .cluster-label {
+  font-family: 'Patrick Hand', 'Poor Story', 'MaruBuri', cursive, sans-serif !important;
+  letter-spacing: 0.01em;
 }

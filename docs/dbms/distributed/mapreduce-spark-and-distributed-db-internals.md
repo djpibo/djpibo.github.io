@@ -1,16 +1,16 @@
 ---
-slug: mapreduce-spark-and-distributed-db-internals
-title: "MapReduce와 Spark, 그리고 분산 분석 DB(Snowflake·ClickHouse)의 내부 메커니즘 비교"
-date: 2026-11-14
-authors: [deejay]
-tags: [architecture, optimization]
+id: mapreduce-spark-and-distributed-db-internals
+title: "MapReduce vs Spark, 그리고 분산 분석 DB(Snowflake, ClickHouse) vs 실시간 트랜잭션에 유리한 Document OLTP(MongoDB)의 내부 메커니즘 비교"
+sidebar_label: MapReduce·Spark·MPP·MongoDB 비교
+sidebar_position: 1
+date: "2026년 11월 14일"
+reading_time: "약 14분"
 ---
 
 MapReduce와 Spark의 차이를 흔히 Disk 기반과 Memory 기반의 차이로만 요약하곤 한다. 하지만 실제 대용량 배치를 운영해 보면, 두 엔진의 처리 성능 차이는 단순한 저장 매체의 속도 차이보다 JVM 프로세스 생명주기 관리, Memory Layout(On-Heap 대 Off-Heap), 그리고 데이터 파이프라인(DAG) 실행 방식의 구조적 차이에서 발생한다.
 
-본 글에서는 JVM 실행 컨테이너와 In-Memory Pipelining 관점에서 MapReduce와 Spark의 내부 동작 원리를 대조하고, 나아가 Snowflake나 ClickHouse 같은 분산 분석 DB(MPP/OLAP)가 어떤 지점에서 Spark와 아키텍처적 지향점을 달리하는지 정리한다.
+본 글에서는 JVM 실행 컨테이너와 In-Memory Pipelining 관점에서 MapReduce와 Spark의 내부 동작 원리를 대조하고, 나아가 Snowflake나 ClickHouse 같은 분산 분석 DB(MPP/OLAP)와 어떤 지점에서 Spark와 아키텍처적 지향점을 달리하는지, 또 실시간 트랜잭션 서비스에는 왜 MongoDB가 유리한지 정리한다.
 
-<!--truncate-->
 
 ---
 
@@ -46,11 +46,11 @@ flowchart LR
 ```
 <p align="center"><em>Figure 1: MapReduce의 1회용 Task JVM 모델과 Spark의 재사용형 Executor JVM 모델 비교</em></p>
 
-### 1.1 Task 실행 모델: 1회용 JVM 프로세스 대 Executor Thread Pool
+### 1.1 Task 실행 모델: 1회용 JVM 프로세스 vs Executor Thread Pool
 
 #### (1) MapReduce: Task 1개마다 JVM을 새로 띄우고 끄는 1회용 프로세스 방식
 MapReduce는 하나의 Map Task나 Reduce Task를 실행할 때마다 YARN의 `NodeManager`가 별도의 JVM 프로세스를 새로 띄운다(Fork). 그리고 그 Task 1개의 처리가 끝나면 해당 JVM 프로세스를 즉시 종료시킨다.
-- 장점 (장애 격리와 GC 무관심): 특정 Task에서 `OutOfMemoryError`가 발생해도 다른 Task와 프로세스가 분리되어 있어 영향이 없다. 또한 Task 하나만 처리하고 몇 초나 몇 분 만에 JVM 프로세스 자체가 곧바로 종료되므로, 메모리에 쌓인 쓰레기 객체를 굳이 Garbage Collection(GC)으로 청소할 필요 없이 OS가 프로세스 종료와 함께 메모리 전체를 한 번에 회수해 간다.
+- 장점 (장애 격리와 GC 부담 제거): 특정 Task에서 `OutOfMemoryError`가 발생해도 다른 Task와 프로세스가 분리되어 있어 서로 영향이 없다. 또한 Task 하나만 처리하고 몇 초나 몇 분 만에 JVM 프로세스 자체가 곧바로 종료되므로, 메모리에 쌓인 쓰레기 객체를 굳이 Garbage Collection(GC)으로 청소할 필요 없이 OS가 프로세스 종료와 함께 메모리 전체를 한 번에 회수한다.
 - 단점 (반복되는 기동 비용): 수만 개의 짧은 Task로 구성된 Job을 실행할 때, 매번 무거운 JVM 프로세스를 OS 레벨에서 새로 띄우고 수백 개의 `.class` 파일을 디스크에서 로딩(Class Loading)하는 데만 매 Task마다 수 초씩 고정 시간이 소모된다.
 
 #### (2) Spark: 한 번 띄워 두고 끝날 때까지 재사용하는 Executor JVM 방식
@@ -73,7 +73,7 @@ Spark처럼 JVM을 끄지 않고 계속 띄워 두는 방식을 쓰면 필연적
 
 Java에서 4바이트 문자열(`"abcd"`) 하나를 `java.lang.String` 객체로 JVM Heap에 올리면, 객체 헤더(Mark Word, Klass Word 12-16B), `char` 배열 참조, 해시코드 캐시, 8바이트 정렬 패딩이 붙어 실제 메모리는 약 48바이트 이상을 점유한다. 수억 건의 레코드를 JVM On-Heap 객체로 적재하면 실제 데이터 크기 대비 2-5배의 메모리가 소모되고, Old Generation 영역이 차오르면서 수십 초 이상 모든 작업이 멈추는 Full GC가 발생한다.
 
-이 문제를 해결하기 위해 Spark는 `Project Tungsten`을 통해 데이터를 JVM On-Heap 객체가 아닌 Off-Heap(OS Native Memory)의 연속된 바이트 배열에 직접 배치하는 구조를 도입했다.
+이 문제를 해결하기 위해 Spark는 `Project Tungsten`을 통해 데이터를 JVM On-Heap 객체가 아닌 Off-Heap(OS Native Memory)의 연속된 바이트 배열에 직접 배치하는 구조를 도입했다. (단, 반쪽자리 Off-Heap 사용이기 때문에 C++ Native 엔진(Photon, Gluten/Velox)을 사용해 한 단계 더 최적화를 진행한다. 자세한건 하단 별도 후술)
 
 ```mermaid
 flowchart LR
@@ -257,7 +257,7 @@ Spark가 MapReduce의 한계를 극복하고 빅데이터 표준 엔진으로 �
 
 1. 대규모 조인(JOIN)과 집계(Aggregation)에서의 메모리 한계와 중단 위험:
    - 일반 단순 조회는 각 워커 노드가 자기 디스크에 있는 데이터만 읽어서 필터링한 뒤 바로 결과를 내면 되므로 노드 간 데이터 이동(Shuffle)이 거의 없다. 이 영역에서는 C++ SIMD와 전용 인덱스를 가진 ClickHouse나 Snowflake가 압도적으로 빠르다.
-   - 하지만 수십 테라바이트짜리 두 테이블을 `JOIN`하거나 고카디널리티 컬럼(예: 수억 명의 `user_id`)으로 `GROUP BY`를 수행할 때는, 모든 노드가 네트워크로 데이터를 교차 전송(Shuffle)하고 메모리에 거대한 해시 테이블(Hash Table)을 지어야 한다.
+   - 하지만 수십 테라바이트짜리 두 테이블을 `JOIN`하거나 높은 카디널리티 컬럼(예: 수억 명의 `user_id`)으로 `GROUP BY`를 수행할 때는, 모든 노드가 네트워크로 데이터를 교차 전송(Shuffle)하고 메모리에 거대한 해시 테이블(Hash Table)을 지어야 한다.
    - ClickHouse 같은 실시간 OLAP DB는 속도를 위해 조인 대상 테이블과 집계 해시 테이블을 인메모리에 올리도록 설계되어 있어, 대용량 테이블 간 조인 시 메모리 제한(OOM)에 걸려 쿼리 자체가 죽어버리는 일이 빈번하다. Snowflake 역시 중간 결과를 디스크에 체크포인트하지 않고 메모리 스트리밍으로 넘기다가 메모리가 부족해지면 원격 스토리지(S3)로 Spill되면서 속도가 급격히 떨어지거나, 1시간짜리 배치 도중 노드 1대만 문제가 생겨도 쿼리 전체를 처음부터 다시 돌려야 한다.
    - 반면 Spark는 처음부터 메모리가 부족하면 로컬 디스크로 안전하게 데이터를 내려쓰며 정렬·병합하는 외부 정렬 병합 조인(External Sort-Merge Join)과 단계별 Shuffle 파일 영속화를 기본으로 설계했다. 덕분에 시간이 조금 더 걸리더라도 수십 테라바이트의 다단계 조인과 집계를 실패 없이 끝까지 완주해 낸다.
 2. SQL을 넘어선 범용 프로그래밍과 단일 통합 파이프라인:
