@@ -9,7 +9,7 @@ reading_time: "약 12분"
 
 # 30분 주기 센터재고이동 배치의 실행 계획 왜곡 해결: Bind Peeking에서 SPM 긴급 처방, 그리고 쿼리 리팩토링까지
 
-올리브영에서는 물류 센터 간에 재고에 대한 수급 불균형을 해소하기 위한 '센터재고이동 배치'는 30분 주기로 빈번하게 가동된다.
+올리브영에서는 물류 센터 간에 재고에 대한 수급 불균형을 해소하기 위해 30분 주기로 '센터재고이동 배치'가 수행된다.
 또한, 매장 발주의 균등한 분배를 수행하는 '수주배분 배치'가 매일 17시에 수행된다.
 
 평소 1~2분 내외로 원활히 종료되던 이 배치가 수주배분 배치 이후에 갑작스럽게 28분 이상 지연되며 다음 회차 배치와 중첩 실행(Overlap) 직전까지 치닫는 프로덕션 장애가 발생했다.
@@ -34,26 +34,22 @@ reading_time: "약 12분"
 
 ```mermaid
 flowchart LR
-    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef processor fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef client fill:#E1F5FE,stroke:#0288D1,color:#01579B;
-    classDef entity fill:#FFFFFF,stroke:#424242,color:#212121;
 
     subgraph ClientLayer["배치 애플리케이션"]
-        APP["배치 워커 스레드"]:::client
+        APP["배치 워커 스레드"]
     end
 
     subgraph SharedPool["Oracle Shared Pool / CBO"]
-        HP["Hard Parse 트리거"]:::processor
-        BP["Bind Peeking<br/>최초 바인드 값 평가"]:::processor
-        ACS["Adaptive Cursor Sharing<br/>Bind Sensitive / Aware"]:::processor
-        STAT["통계 정보 갱신<br/>(Stale / Dynamic Sampling)"]:::processor
-        INV["Cursor Invalidation<br/>(Aging / DDL)"]:::processor
+        HP["Hard Parse 트리거"]
+        BP["Bind Peeking<br/>최초 바인드 값 평가"]
+        ACS["Adaptive Cursor Sharing<br/>Bind Sensitive / Aware"]
+        STAT["통계 정보 갱신<br/>(Stale / Dynamic Sampling)"]
+        INV["Cursor Invalidation<br/>(Aging / DDL)"]
     end
 
     subgraph StorageLayer["데이터 딕셔너리 및 SGA"]
-        DICT[("DBA_TAB_STATISTICS<br/>히스토그램")]:::storage
-        CACHE[("Library Cache<br/>Cursor Heap")]:::storage
+        DICT[("DBA_TAB_STATISTICS<br/>히스토그램")]
+        CACHE[("Library Cache<br/>Cursor Heap")]
     end
 
     APP -->|"SQL 실행 요청 (:bind_var)"| HP
@@ -63,10 +59,6 @@ flowchart LR
     HP -->|"바인드 값 검사"| BP
     BP -->|"초기 플랜 생성"| CACHE
     CACHE -.->|"실행 횟수/버킷 피드백"| ACS
-
-    style ClientLayer fill:none,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray:6 4;
-    style SharedPool fill:none,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray:6 4;
-    style StorageLayer fill:none,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray:6 4;
 ```
 <p align="center"><em>Figure 1: Oracle CBO 환경에서 Execution Plan 변경을 유발하는 4대 트리거와 상호작용</em></p>
 
@@ -136,31 +128,24 @@ SELECT /*+ GATHER_PLAN_STATISTICS */
 
 ```mermaid
 flowchart LR
-    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef processor fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef client fill:#E1F5FE,stroke:#0288D1,color:#01579B;
-    classDef entity fill:#FFFFFF,stroke:#424242,color:#212121;
 
     subgraph Timeline["1. 첫 번째 실행 (MFC_24 소형 거점)"]
         direction TB
-        P1["바인드 변수: :center_cd = 'MFC_24'"]:::client
-        HP1["Hard Parse + Bind Peeking<br/><b>E-Rows: 30건 추정</b>"]:::processor
-        PLAN1["Plan Hash: 11223344<br/><b>Index Scan + Nested Loop Join</b><br/>수행시간: 0.05초 (Buffer: 42)"]:::storage
+        P1["바인드 변수: :center_cd = 'MFC_24'"]
+        HP1["Hard Parse + Bind Peeking<br/><b>E-Rows: 30건 추정</b>"]
+        PLAN1["Plan Hash: 11223344<br/><b>Index Scan + Nested Loop Join</b><br/>수행시간: 0.05초 (Buffer: 42)"]
         P1 --> HP1 --> PLAN1
     end
 
     subgraph Execution["2. 두 번째 실행 (HUB_01 메가 허브)"]
         direction TB
-        P2["바인드 변수: :center_cd = 'HUB_01'"]:::client
-        SP2["Soft Parse (Library Cache 적재본 재사용)<br/><b>기존 11223344 플랜 강제 적용</b>"]:::processor
-        PLAN2["<b>실제 처리: A-Rows 150,000건</b><br/>NL Join 반복 루프 15만 회<br/>단건 Random Access 폭증<br/><b>수행시간: 28분 42초 (Buffer: 15,280,000)</b>"]:::processor
+        P2["바인드 변수: :center_cd = 'HUB_01'"]
+        SP2["Soft Parse (Library Cache 적재본 재사용)<br/><b>기존 11223344 플랜 강제 적용</b>"]
+        PLAN2["<b>실제 처리: A-Rows 150,000건</b><br/>NL Join 반복 루프 15만 회<br/>단건 Random Access 폭증<br/><b>수행시간: 28분 42초 (Buffer: 15,280,000)</b>"]
         P2 --> SP2 --> PLAN2
     end
 
     PLAN1 -.->|"Plan Hash: 11223344 캐싱"| SP2
-
-    style Timeline fill:none,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray:6 4;
-    style Execution fill:none,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray:6 4;
 ```
 <p align="center"><em>Figure 2: Bind Peeking에 의해 소형 거점 전용 플랜이 메가 허브 대용량 처리에 오염 적용되는 메커니즘</em></p>
 
@@ -227,36 +212,27 @@ SQL Profile은 옵티마이저에게 추가적인 환경 힌트 세트를 전달
 
 ```mermaid
 flowchart LR
-    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef processor fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef client fill:#E1F5FE,stroke:#0288D1,color:#01579B;
-    classDef entity fill:#FFFFFF,stroke:#424242,color:#212121;
 
     subgraph Step1["1. Shared Pool 탐색"]
-        VSQL["V$SQL 뷰 조회<br/>(SQL_ID, PLAN_HASH_VALUE)"]:::processor
+        VSQL["V$SQL 뷰 조회<br/>(SQL_ID, PLAN_HASH_VALUE)"]
     end
 
     subgraph Step2["2. Baseline 적재"]
-        SPM_LOAD["DBMS_SPM.LOAD_PLANS_FROM_CURSOR_CACHE<br/>Plan Hash: 2837194012 등록"]:::processor
+        SPM_LOAD["DBMS_SPM.LOAD_PLANS_FROM_CURSOR_CACHE<br/>Plan Hash: 2837194012 등록"]
     end
 
     subgraph Step3["3. Baseline 속성 고정"]
-        SPM_FIX["DBMS_SPM.ALTER_SQL_PLAN_BASELINE<br/><b>FIXED = 'YES'</b>"]:::processor
-        SMB[("SQL Management Base<br/>(SYSAUX)")]:::storage
+        SPM_FIX["DBMS_SPM.ALTER_SQL_PLAN_BASELINE<br/><b>FIXED = 'YES'</b>"]
+        SMB[("SQL Management Base<br/>(SYSAUX)")]
     end
 
     subgraph Step4["4. 차기 배치 검증"]
-        APP["배치 실행<br/><b>1분 40초 안정화</b>"]:::client
-        NOTE["A-Plan Note:<br/><i>SQL plan baseline used</i>"]:::storage
+        APP["배치 실행<br/><b>1분 40초 안정화</b>"]
+        NOTE["A-Plan Note:<br/><i>SQL plan baseline used</i>"]
     end
 
     VSQL --> SPM_LOAD --> SPM_FIX --> SMB
     SMB -->|"플랜 고정 적용"| APP --> NOTE
-
-    style Step1 fill:none,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray:6 4;
-    style Step2 fill:none,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray:6 4;
-    style Step3 fill:none,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray:6 4;
-    style Step4 fill:none,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray:6 4;
 ```
 <p align="center"><em>Figure 3: SPM을 통한 Plan Hash Value 추출 및 FIXED Baseline 등록 파이프라인</em></p>
 
@@ -442,35 +418,26 @@ SELECT /*+ LEADING(m i) USE_HASH(i) FULL(m) FULL(i) SWAP_JOIN_INPUTS(i) */
 
 ```mermaid
 flowchart LR
-    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef processor fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef client fill:#E1F5FE,stroke:#0288D1,color:#01579B;
-    classDef entity fill:#FFFFFF,stroke:#424242,color:#212121;
 
     subgraph BatchApp["배치 라우팅 컨트롤러"]
-        DISPATCH{"센터 유형 판별<br/>(HUB vs SUB)"}:::client
+        DISPATCH{"센터 유형 판별<br/>(HUB vs SUB)"}
     end
 
     subgraph HubPipeline["대용량 허브 전용 파이프라인"]
-        HUB_SQL["허브 전용 SQL<br/><b>Hash Join + Parallel/Direct Path</b><br/>(대용량 집합 일괄 처리)"]:::processor
+        HUB_SQL["허브 전용 SQL<br/><b>Hash Join + Parallel/Direct Path</b><br/>(대용량 집합 일괄 처리)"]
     end
 
     subgraph SubPipeline["소형 거점 전용 파이프라인"]
-        SUB_SQL["소형 거점 전용 SQL<br/><b>Index Range Scan + NL Join</b><br/>(단건 고속 탐색)"]:::processor
+        SUB_SQL["소형 거점 전용 SQL<br/><b>Index Range Scan + NL Join</b><br/>(단건 고속 탐색)"]
     end
 
     subgraph Database["Oracle DB 엔진"]
-        HUB_PLAN[("Plan A: Hash Join<br/>소요: 1분 10초")]:::storage
-        SUB_PLAN[("Plan B: NL Join<br/>소요: 0.02초")]:::storage
+        HUB_PLAN[("Plan A: Hash Join<br/>소요: 1분 10초")]
+        SUB_PLAN[("Plan B: NL Join<br/>소요: 0.02초")]
     end
 
     DISPATCH -->|"센터코드: HUB_*"| HUB_SQL --> HUB_PLAN
     DISPATCH -->|"센터코드: MFC_*"| SUB_SQL --> SUB_PLAN
-
-    style BatchApp fill:none,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray:6 4;
-    style HubPipeline fill:none,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray:6 4;
-    style SubPipeline fill:none,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray:6 4;
-    style Database fill:none,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray:6 4;
 ```
 <p align="center"><em>Figure 4: 센터 규모에 따른 워크로드 격리 및 독립 Execution Plan 라우팅 아키텍처</em></p>
 
@@ -544,35 +511,27 @@ END;
 
 ```mermaid
 flowchart LR
-    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef processor fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef client fill:#E1F5FE,stroke:#0288D1,color:#01579B;
-    classDef entity fill:#FFFFFF,stroke:#424242,color:#212121;
 
     subgraph StepA["1단계: 즉각 소방 조치 (SPM)"]
-        A1["무배포 인프라 대응<br/>DBA 레벨 즉시 개입"]:::processor
-        A2["Plan Baseline 고정<br/>(FIXED = YES)"]:::storage
+        A1["무배포 인프라 대응<br/>DBA 레벨 즉시 개입"]
+        A2["Plan Baseline 고정<br/>(FIXED = YES)"]
         A1 --> A2
     end
 
     subgraph StepB["2단계: 코드 레벨 안정화 (Outline Hint)"]
-        B1["정기 배포 주기 반영<br/>개발팀 형상 관리 편입"]:::processor
-        B2["완결된 힌트 세트 주입<br/>(LEADING + USE_HASH)"]:::entity
+        B1["정기 배포 주기 반영<br/>개발팀 형상 관리 편입"]
+        B2["완결된 힌트 세트 주입<br/>(LEADING + USE_HASH)"]
         B1 --> B2
     end
 
     subgraph StepC["3단계: 근본 아키텍처 리팩토링 (격리)"]
-        C1["데이터 Skew 도메인 분리"]:::processor
-        C2["센터 규모별 파이프라인 분기<br/>SPM 베이스라인 해제"]:::client
+        C1["데이터 Skew 도메인 분리"]
+        C2["센터 규모별 파이프라인 분기<br/>SPM 베이스라인 해제"]
         C1 --> C2
     end
 
     StepA -->|"장애 안정화 후 배포 준비"| StepB
     StepB -->|"구조적 기술 부채 청산"| StepC
-
-    style StepA fill:none,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray:6 4;
-    style StepB fill:none,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray:6 4;
-    style StepC fill:none,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray:6 4;
 ```
 <p align="center"><em>Figure 5: 3단계 장애 대응 라이프사이클: 긴급 안정화에서 구조적 개선까지</em></p>
 

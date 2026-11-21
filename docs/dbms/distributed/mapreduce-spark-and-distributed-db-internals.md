@@ -25,15 +25,11 @@ sequenceDiagram
     participant SP as Spark Executor (재사용 JVM)
     participant Mem as Off-Heap Memory (UnsafeRow)
 
-    rect rgb(255, 249, 196)
-        Note over Master,MR: MapReduce: Task마다 JVM 새로 기동 (Process-per-Task)
+    alt MapReduce: Task마다 JVM 새로 기동 (Process-per-Task)
         Master->>MR: 1. OS 프로세스 Fork 및 Class Loading (수 초 소요)
-        MR-->>MR: 2. On-Heap Java 객체 생성 및 100MB 버퍼 Spill
+        MR->>MR: 2. On-Heap Java 객체 생성 및 100MB 버퍼 Spill
         Note over MR: Task 1 완료 즉시 JVM 프로세스 종료 (JIT 최적화 소멸)
-    end
-
-    rect rgb(225, 245, 254)
-        Note over Master,Mem: Spark: 기존 JVM Thread Pool 재사용 (Long-lived Executor)
+    else Spark: 기존 JVM Thread Pool 재사용 (Long-lived Executor)
         Master->>SP: 1. LaunchTask RPC 패킷 전송 (수 ms 소요)
         SP->>Mem: 2. sun.misc.Unsafe로 Off-Heap 바이너리 직접 연산
         Note over SP: JVM 유지 -> 다음 Task 즉시 할당 & JIT 기계어 누적 재사용
@@ -72,23 +68,20 @@ Java에서 4바이트 문자열(`"abcd"`) 하나를 `java.lang.String` 객체로
 
 ```mermaid
 flowchart LR
-    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef process fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef cloud fill:#E1F5FE,stroke:#0288D1,color:#01579B;
 
     subgraph ON_HEAP ["1. 일반 JVM On-Heap: 객체 파편화 및 Pointer Chasing"]
         direction LR
-        ROW_OBJ["Row 객체 헤더 (16B)<br/>주소: 0x1000"]:::process
-        STR_OBJ["String 객체 헤더 (24B)<br/>주소: 0x5A00 (멀리 떨어짐)"]:::process
-        CHAR_ARR["byte[] 실제 문자열<br/>주소: 0x9F00 (또 점프)"]:::storage
+        ROW_OBJ["Row 객체 헤더 (16B)<br/>주소: 0x1000"]
+        STR_OBJ["String 객체 헤더 (24B)<br/>주소: 0x5A00 (멀리 떨어짐)"]
+        CHAR_ARR["byte[] 실제 문자열<br/>주소: 0x9F00 (또 점프)"]
         ROW_OBJ -->|"포인터 참조 (Cache Miss)"| STR_OBJ
         STR_OBJ -->|"포인터 참조 (Cache Miss)"| CHAR_ARR
     end
 
     subgraph OFF_HEAP ["2. Spark Off-Heap: 연속된 메모리 배치 및 L1/L2 Cache 적중"]
         direction LR
-        CONT_MEM[("OS Native Memory (GC 대상 제외)<br/>주소 0x2000부터 연속 배치:<br/>[1001 | 50000 | 'APPLE']")]:::storage
-        CPU_CACHE["CPU L1/L2 Cache (64B Cache Line)<br/>한 번 읽을 때 인접 데이터 통째로 적재"]:::cloud
+        CONT_MEM[("OS Native Memory (GC 대상 제외)<br/>주소 0x2000부터 연속 배치:<br/>[1001 | 50000 | 'APPLE']")]
+        CPU_CACHE["CPU L1/L2 Cache (64B Cache Line)<br/>한 번 읽을 때 인접 데이터 통째로 적재"]
         CONT_MEM -->|"포인터 점프 없이 순차 로드"| CPU_CACHE
     end
 ```
@@ -109,13 +102,10 @@ Spark가 Off-Heap(또는 연속된 바이트 배열)에 한 행을 저장할 때
 
 ```mermaid
 flowchart LR
-    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef process fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef cloud fill:#E1F5FE,stroke:#0288D1,color:#01579B;
 
-    NULL_BIT["[1] Null Bitmap (8B)<br/>+0B: 컬럼별 Null 표시"]:::cloud
-    SLOTS["[2] 고정 8B Slot 영역 (컬럼당 8B 고정)<br/>+8B: id = 1001<br/>+16B: name = (위치 +32B, 길이 5)<br/>+24B: price = 50000"]:::process
-    VAR_DATA[("[3] 가변 데이터 영역<br/>+32B: 'APPLE' (실제 문자열)")]:::storage
+    NULL_BIT["[1] Null Bitmap (8B)<br/>+0B: 컬럼별 Null 표시"]
+    SLOTS["[2] 고정 8B Slot 영역 (컬럼당 8B 고정)<br/>+8B: id = 1001<br/>+16B: name = (위치 +32B, 길이 5)<br/>+24B: price = 50000"]
+    VAR_DATA[("[3] 가변 데이터 영역<br/>+32B: 'APPLE' (실제 문자열)")]
 
     NULL_BIT --> SLOTS --> VAR_DATA
 ```
@@ -158,17 +148,13 @@ sequenceDiagram
     participant Eng as 연산 엔진 (MapReduce / Spark)
     participant Mid as 중간 저장소 (HDFS / Local Disk)
 
-    rect rgb(255, 235, 238)
-        Note over Disk,Mid: MapReduce: Job 단계마다 HDFS 강제 기록 (높은 I/O 병목)
+    alt MapReduce: Job 단계마다 HDFS 강제 기록
         Disk->>Eng: Job 1 입력 블록 전체 Read
         Eng->>Mid: Job 1 결과를 HDFS에 강제 기록 (3중 네트워크 복제)
         Mid->>Eng: Job 2 시작 시 HDFS에서 다시 전체 Read
-    end
-
-    rect rgb(232, 245, 233)
-        Note over Disk,Mid: Spark: 단일 Stage 내 Whole-Stage CodeGen Pipelining
+    else Spark: 단일 Stage 내 Whole-Stage CodeGen Pipelining
         Disk->>Eng: Parquet에서 필요한 컬럼만 Batch Read
-        Note over Eng: 단일 while 루프 합성 (Filter1 -> Map1 -> Filter2 -> Map2)<br/>중간 버퍼 생성 없이 CPU 레지스터/캐시에서 즉시 통과
+        Note over Eng: 단일 while 루프 합성 (Filter1 -> Map1 -> Filter2 -> Map2)<br/>중간 버퍼 없이 CPU 레지스터/캐시에서 즉시 통과
         Eng->>Mid: Stage 경계(Shuffle)에서만 Local Disk에 1회 기록
     end
 ```
@@ -279,24 +265,21 @@ Spark가 MapReduce의 한계를 극복하고 빅데이터 표준 엔진으로 �
 
 ```mermaid
 flowchart LR
-    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef process fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef cloud fill:#E1F5FE,stroke:#0288D1,color:#01579B;
 
     subgraph SPARK_ENG ["Spark 기본 엔진: Row 변환 및 Disk Shuffle 보장"]
         direction LR
-        S_PARQ[("Parquet File<br/>Columnar")]:::storage
-        S_ROW["UnsafeRow 변환<br/>Row 단위 루프 연산"]:::process
-        S_DISK[("Local Disk Shuffle<br/>Stage 체크포인트")]:::storage
+        S_PARQ[("Parquet File<br/>Columnar")]
+        S_ROW["UnsafeRow 변환<br/>Row 단위 루프 연산"]
+        S_DISK[("Local Disk Shuffle<br/>Stage 체크포인트")]
         S_PARQ -->|"ColumnarToRow"| S_ROW
         S_ROW -->|"Fault Tolerance 보장"| S_DISK
     end
 
     subgraph MPP_ENG ["Snowflake / ClickHouse: C++ Columnar Vectorized & SIMD"]
         direction LR
-        M_COL[("Columnar Storage<br/>Micro-partition / MergeTree")]:::storage
-        M_VEC["C++ Column Vector Batch<br/>1024-4096개 배열 일괄 SIMD 연산"]:::process
-        M_NET(["In-Memory Exchange<br/>노드 간 직접 스트리밍"]):::cloud
+        M_COL[("Columnar Storage<br/>Micro-partition / MergeTree")]
+        M_VEC["C++ Column Vector Batch<br/>1024-4096개 배열 일괄 SIMD 연산"]
+        M_NET(["In-Memory Exchange<br/>노드 간 직접 스트리밍"])
         M_COL -->|"무변환 배열 로드"| M_VEC
         M_VEC -->|"Disk 기록 생략"| M_NET
     end
@@ -309,20 +292,16 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef process fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef cloud fill:#E1F5FE,stroke:#0288D1,color:#01579B;
-    classDef danger fill:#FFEBEE,stroke:#E53935,color:#B71C1C;
 
-    PARQ[("Parquet 파일 (Disk)<br/>Row Group 내 필요한 Column Chunk만 I/O")]:::storage
-    DEC{"실행 엔진 유형"}:::process
+    PARQ[("Parquet 파일 (Disk)<br/>Row Group 내 필요한 Column Chunk만 I/O")]
+    DEC{"실행 엔진 유형"}
 
-    V_READ["Vectorized Reader<br/>ColumnarBatch (4,096행 배열 로드)"]:::cloud
-    C2R["병목: ColumnarToRowExec<br/>세로 배열을 가로 UnsafeRow로 1행씩 재조립<br/>(전체 CPU의 20-40% 소모)"]:::danger
-    OP_ROW["기본 Catalyst 코어 연산자<br/>Iterator[UnsafeRow] (1행씩 스칼라 루프)"]:::process
+    V_READ["Vectorized Reader<br/>ColumnarBatch (4,096행 배열 로드)"]
+    C2R["병목: ColumnarToRowExec<br/>세로 배열을 가로 UnsafeRow로 1행씩 재조립<br/>(전체 CPU의 20-40% 소모)"]
+    OP_ROW["기본 Catalyst 코어 연산자<br/>Iterator[UnsafeRow] (1행씩 스칼라 루프)"]
 
-    N_READ["Native Parquet Reader<br/>ColumnarBatch 상태 그대로 유지"]:::cloud
-    N_OP["C++ SIMD Vectorized 연산<br/>ColumnarToRow 생략 (Filter/Join/Agg 전 구간)"]:::storage
+    N_READ["Native Parquet Reader<br/>ColumnarBatch 상태 그대로 유지"]
+    N_OP["C++ SIMD Vectorized 연산<br/>ColumnarToRow 생략 (Filter/Join/Agg 전 구간)"]
 
     PARQ --> DEC
     DEC -->|"기본 Spark (JVM)"| V_READ --> C2R --> OP_ROW
@@ -342,28 +321,25 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef process fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef cloud fill:#E1F5FE,stroke:#0288D1,color:#01579B;
 
     subgraph SP_STORE ["1. Spark + Iceberg / Delta Lake (S3 파일 + Manifest 계층)"]
         direction LR
-        MANIFEST["Manifest / _delta_log 파일<br/>파일별 경로 및 컬럼 Min/Max 기록"]:::cloud
-        PARQ_F[("S3 Parquet 파일들 (128MB-1GB)<br/>내부 Row Group + 하단 Footer")]:::storage
+        MANIFEST["Manifest / _delta_log 파일<br/>파일별 경로 및 컬럼 Min/Max 기록"]
+        PARQ_F[("S3 Parquet 파일들 (128MB-1GB)<br/>내부 Row Group + 하단 Footer")]
         MANIFEST -->|"1차: 조건에 맞는 파일만 선별"| PARQ_F
     end
 
     subgraph SF_STORE ["2. Snowflake (중앙 메타데이터 DB + S3 Micro-partition)"]
         direction LR
-        FDB["Cloud Services (FoundationDB)<br/>전역 메타데이터 및 모든 컬럼 통계 상주"]:::cloud
-        MICRO[("S3 Micro-partition (50-500MB)<br/>독점 컬럼 포맷 (PAX 구조)")]:::storage
+        FDB["Cloud Services (FoundationDB)<br/>전역 메타데이터 및 모든 컬럼 통계 상주"]
+        MICRO[("S3 Micro-partition (50-500MB)<br/>독점 컬럼 포맷 (PAX 구조)")]
         FDB -->|"파일 열기 전 수 ms 내 파티션 확정"| MICRO
     end
 
     subgraph CH_STORE ["3. ClickHouse (RAM Sparse Index + 로컬 SSD MergeTree)"]
         direction LR
-        SPARSE["RAM 상주 primary.idx<br/>8,192행(Granule)당 대표 키 1개만 보관"]:::process
-        MERGETREE[("Local NVMe SSD (data.bin / mrk)<br/>ORDER BY 키 기준 물리 정렬된 컬럼 블록")]:::storage
+        SPARSE["RAM 상주 primary.idx<br/>8,192행(Granule)당 대표 키 1개만 보관"]
+        MERGETREE[("Local NVMe SSD (data.bin / mrk)<br/>ORDER BY 키 기준 물리 정렬된 컬럼 블록")]
         SPARSE -->|"해당 파일 Offset으로 즉시 Seek"| MERGETREE
     end
 ```
@@ -393,18 +369,14 @@ sequenceDiagram
     participant Disk as Local Disk (.data + .index)
     participant S2 as Stage 2 (후행 연산 노드)
 
-    rect rgb(255, 235, 238)
-        Note over S1,S2: 1. 체크포인트 없는 스트리밍 (Snowflake / ClickHouse / MongoDB $lookup)
+    alt 체크포인트 없는 스트리밍 (Snowflake / ClickHouse / MongoDB $lookup)
         S1->>S2: 디스크 기록 없이 네트워크 소켓으로 메모리 직접 스트리밍
-        Note over S2: 55분째 노드 1대 장애 발생!
+        Note over S2: 55분째 노드 1대 장애 발생
         S2-->>S1: 중간 세이브 파일 없음 -> 0분(Stage 1)부터 쿼리 전체 재실행
-    end
-
-    rect rgb(232, 245, 233)
-        Note over S1,S2: 2. Spark의 Shuffle 파일 체크포인트 기반 부분 복구
+    else Spark의 Shuffle 파일 체크포인트 기반 부분 복구
         S1->>Disk: Stage 1 완료 시 shuffle.data + shuffle.index 영속화
         Disk->>S2: 필요한 파티션 데이터 네트워크 Fetch
-        Note over S2: 55분째 3번 Task 장애 발생!
+        Note over S2: 55분째 3번 Task 장애 발생
         Disk->>S2: .index 목차로 3번 파티션만 다시 읽음 -> 죽은 Task 1개만 5분 내 복구
     end
 ```
@@ -432,24 +404,21 @@ Snowflake와 ClickHouse, 그리고 Spark의 Photon/Gluten 엔진이 CPU 코어�
 
 ```mermaid
 flowchart LR
-    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef process fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef cloud fill:#E1F5FE,stroke:#0288D1,color:#01579B;
 
     subgraph ROW_MODE ["Row 기반 처리: Cache Line 오염 및 스칼라 연산"]
         direction LR
-        R_MEM[("64B Cache Line<br/>[ID | Name | Price | Date]")]:::storage
-        R_ALU["일반 64-bit 레지스터 (SISD)<br/>1 클럭당 Price 1건 연산"]:::process
-        R_BR["if 조건 분기 (Branch)<br/>예측 실패 시 파이프라인 Stall"]:::cloud
+        R_MEM[("64B Cache Line<br/>[ID | Name | Price | Date]")]
+        R_ALU["일반 64-bit 레지스터 (SISD)<br/>1 클럭당 Price 1건 연산"]
+        R_BR["if 조건 분기 (Branch)<br/>예측 실패 시 파이프라인 Stall"]
         R_MEM -->|"56B 버림 / 8B만 사용"| R_ALU
         R_ALU -->|"매 행 분기 평가"| R_BR
     end
 
     subgraph VEC_MODE ["Columnar Vectorized: Cache Line 100% 활용 및 SIMD 병렬 연산"]
         direction LR
-        C_MEM[("64B Cache Line<br/>[P1 | P2 | ... | P16] (int32 x 16)")]:::storage
-        C_SIMD["512-bit ZMM 레지스터 (AVX-512)<br/>1 클럭당 Price 16건 동시 연산"]:::process
-        C_MASK["Branchless Bitmask / Selection Vector<br/>분기 없이 통과 인덱스만 마스킹"]:::cloud
+        C_MEM[("64B Cache Line<br/>[P1 | P2 | ... | P16] (int32 x 16)")]
+        C_SIMD["512-bit ZMM 레지스터 (AVX-512)<br/>1 클럭당 Price 16건 동시 연산"]
+        C_MASK["Branchless Bitmask / Selection Vector<br/>분기 없이 통과 인덱스만 마스킹"]
         C_MEM -->|"64B 전체 적재 (L1 Cache 상주)"| C_SIMD
         C_SIMD -->|"단일 SIMD 비교 명령"| C_MASK
     end
@@ -540,16 +509,13 @@ ClickHouse나 Snowflake의 Vectorized 엔진은 위 코드 예시처럼 `if` 문
 
 ```mermaid
 flowchart LR
-    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef process fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef cloud fill:#E1F5FE,stroke:#0288D1,color:#01579B;
 
     subgraph COL_GATHER ["1. Columnar의 약점: Shuffle / Hash Join 시 행 재조립(Gather) 병목"]
         direction LR
-        CA1[("Col 1 배열 (주소 0x10000)<br/>[ ... | 3번행 값 | ... ]")]:::storage
-        CA2[("Col 2 배열 (주소 0x50000)<br/>[ ... | 3번행 값 | ... ]")]:::storage
-        CA20[("Col 20 배열 (주소 0xF0000)<br/>[ ... | 3번행 값 | ... ]")]:::storage
-        RECON["3번 행 1개 패킷 조립<br/>메모리 20군데 점프 (Cache Miss 폭증)"]:::process
+        CA1[("Col 1 배열 (주소 0x10000)<br/>[ ... | 3번행 값 | ... ]")]
+        CA2[("Col 2 배열 (주소 0x50000)<br/>[ ... | 3번행 값 | ... ]")]
+        CA20[("Col 20 배열 (주소 0xF0000)<br/>[ ... | 3번행 값 | ... ]")]
+        RECON["3번 행 1개 패킷 조립<br/>메모리 20군데 점프 (Cache Miss 폭증)"]
         CA1 -->|"점프 1"| RECON
         CA2 -->|"점프 2"| RECON
         CA20 -->|"점프 20"| RECON
@@ -557,8 +523,8 @@ flowchart LR
 
     subgraph HYBRID_PIPE ["2. 현대 엔진(Photon / Velox / Snowflake)의 하이브리드 파이프라인"]
         direction LR
-        SCAN_FILT["Scan / Filter / 단순 집계<br/>Columnar 배열 + SIMD 유지"]:::cloud
-        JOIN_SHUF["Hash Join 테이블 / Shuffle 전송<br/>컴팩트 Row 포맷으로 전환해 일괄 복사"]:::process
+        SCAN_FILT["Scan / Filter / 단순 집계<br/>Columnar 배열 + SIMD 유지"]
+        JOIN_SHUF["Hash Join 테이블 / Shuffle 전송<br/>컴팩트 Row 포맷으로 전환해 일괄 복사"]
         SCAN_FILT -->|"살아남은 행만 Row로 전환"| JOIN_SHUF
     end
 ```
@@ -588,23 +554,20 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef process fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef cloud fill:#E1F5FE,stroke:#0288D1,color:#01579B;
 
     subgraph RDBMS_WAY ["1. 전통 RDBMS: 정규화 분리 저장 후 읽을 때 JOIN"]
         direction LR
-        T_ORD[("주문 테이블")]:::storage
-        T_ITEM[("주문상품 테이블")]:::storage
-        T_JOIN["런타임 JOIN 연산"]:::process
+        T_ORD[("주문 테이블")]
+        T_ITEM[("주문상품 테이블")]
+        T_JOIN["런타임 JOIN 연산"]
         T_ORD --> T_JOIN
         T_ITEM --> T_JOIN
     end
 
     subgraph MONGO_WAY ["2. MongoDB (WiredTiger + BSON): 계층 구조 통째로 단일 블록 저장"]
         direction LR
-        B_IDX["B-Tree Index<br/>_id = 101 즉시 탐색"]:::cloud
-        BSON_DOC[("단일 BSON Document (주소 0x3000)<br/>{ _id: 101, items: [{...}, {...}], shipping: {...} }")]:::storage
+        B_IDX["B-Tree Index<br/>_id = 101 즉시 탐색"]
+        BSON_DOC[("단일 BSON Document (주소 0x3000)<br/>{ _id: 101, items: [{...}, {...}], shipping: {...} }")]
         B_IDX -->|"JOIN 및 Gather 없이 1회 I/O로 완제품 반환"| BSON_DOC
     end
 ```

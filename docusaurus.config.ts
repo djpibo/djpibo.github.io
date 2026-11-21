@@ -102,6 +102,9 @@ const config: Config = {
         themeVariables: {
           fontSize: '14px',
           lineColor: '#8b949e',
+          noteBkgColor: '#26292e',
+          noteTextColor: '#e8eaed',
+          noteBorderColor: '#4b525c',
         },
       },
     },

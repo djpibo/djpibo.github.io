@@ -348,17 +348,12 @@ Softmax를 거쳐 산출된 어텐션 확률 가중치 행렬과 Value 행렬을
 ```mermaid
 flowchart LR
     subgraph AR_BOTTLENECK ["Autoregressive LLM Bottleneck"]
-        style AR_BOTTLENECK stroke:#424242,stroke-dasharray: 6 4,fill:none
-        P_LOOP["Decode Loop: 토큰 1개당 1회 순전파 반복"]:::processNode
-        P_MEM["매 스텝 HBM ↔ SRAM 간 KV Cache 읽기/쓰기"]:::coreNode
-        P_LATENCY["Memory Bandwidth Bound로 인한 지연 시간 폭증"]:::dbNode
+        P_LOOP["Decode Loop: 토큰 1개당 1회 순전파 반복"]
+        P_MEM["매 스텝 HBM ↔ SRAM 간 KV Cache 읽기/쓰기"]
+        P_LATENCY["Memory Bandwidth Bound로 인한 지연 시간 폭증"]
     end
 
     P_LOOP --> P_MEM --> P_LATENCY
-
-    classDef coreNode fill:#FFFFFF,stroke:#424242,color:#212121;
-    classDef processNode fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef dbNode fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
 ```
 <p align="center"><em>Figure 2: 생성형 LLM의 반복 디코딩 루프와 메모리 병목 구조</em></p>
 
@@ -434,18 +429,13 @@ TypeSafe AI의 Jev는 텍스트를 한 글자씩 지어내는 생성형 방식�
 ```mermaid
 flowchart LR
     subgraph JEV_PIPELINE ["Jev Single Forward Pass Engine"]
-        style JEV_PIPELINE stroke:#424242,stroke-dasharray: 6 4,fill:none
-        J_IN["State + Questions 입력"]:::coreNode
-        J_BI["Bidirectional Attention<br/>전방향 상호 교차 참조"]:::processNode
-        J_HEAD["Type Heads 직결<br/>Choice / Score / Noul"]:::processNode
-        J_OUT["Calibrated Decision 출력<br/>(15ms ~ 50ms)"]:::dbNode
+        J_IN["State + Questions 입력"]
+        J_BI["Bidirectional Attention<br/>전방향 상호 교차 참조"]
+        J_HEAD["Type Heads 직결<br/>Choice / Score / Noul"]
+        J_OUT["Calibrated Decision 출력<br/>(15ms ~ 50ms)"]
     end
 
     J_IN --> J_BI --> J_HEAD --> J_OUT
-
-    classDef coreNode fill:#FFFFFF,stroke:#424242,color:#212121;
-    classDef processNode fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef dbNode fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
 ```
 <p align="center"><em>Figure 3: Jev의 단일 순전파 및 타입 헤드 직결 아키텍처</em></p>
 
@@ -504,23 +494,19 @@ Jev의 **RLCD**는 Brier Score나 음의 로그 우도(NLL) 같은 통계적 채
 flowchart LR
     %% Subgraph Boundaries
     subgraph INGRESS ["Ingress Layer"]
-        style INGRESS stroke:#424242,stroke-dasharray: 6 4,fill:none
-        REQ(["Client Request / Event"]):::extNode
+        REQ(["Client Request / Event"])
     end
 
     subgraph SYSTEM1 ["System 1: Fast Reflex Engine"]
-        style SYSTEM1 stroke:#424242,stroke-dasharray: 6 4,fill:none
-        JEV["Jev Decision Engine (15ms)<br/>Parallel Sampling & Calibration"]:::processNode
+        JEV["Jev Decision Engine (15ms)<br/>Parallel Sampling & Calibration"]
     end
 
     subgraph SYSTEM2 ["System 2: Deep Reasoning Engine"]
-        style SYSTEM2 stroke:#424242,stroke-dasharray: 6 4,fill:none
-        REASON["Reasoning LLM (o1/R1)<br/>Multi-hop Reasoning & Code Gen"]:::processNode
+        REASON["Reasoning LLM (o1/R1)<br/>Multi-hop Reasoning & Code Gen"]
     end
 
     subgraph BACKEND ["Storage & Execution"]
-        style BACKEND stroke:#424242,stroke-dasharray: 6 4,fill:none
-        APP[("Application Service / DB")]:::dbNode
+        APP[("Application Service / DB")]
     end
 
     %% Pipeline Flow
@@ -530,9 +516,6 @@ flowchart LR
     REASON -->|"Long CoT Solution / Refactored Code"| APP
 
     %% Node Styles
-    classDef dbNode fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef processNode fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef extNode fill:#E1F5FE,stroke:#0288D1,color:#01579B;
 ```
 <p align="center"><em>Figure 4: System 1(Jev)과 System 2(Reasoning LLM)의 계층형 파이프라인 연계 아키텍처</em></p>
 

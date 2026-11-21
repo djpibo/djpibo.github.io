@@ -18,20 +18,16 @@ reading_time: "약 11분"
 
 ```mermaid
 flowchart TD
-    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef process fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef cloud fill:#E1F5FE,stroke:#0288D1,color:#01579B;
-    classDef danger fill:#FFEBEE,stroke:#E53935,color:#B71C1C;
 
-    Q(["SQL 입력 (다중 조건 및 3-5개 이상 조인)"]):::cloud
-    CE["1단계: Cardinality Estimation<br/>예상 행 수 추정"]:::process
-    CE_CHECK{"컬럼 간 Correlation / Skew<br/>정확히 반영되는가?"}:::process
-    CE_ERR["핵심 병목: 수 자릿수 과소평가 발생<br/>(실제 40,000행 -> 추정 300행)"]:::danger
+    Q(["SQL 입력 (다중 조건 및 3-5개 이상 조인)"])
+    CE["1단계: Cardinality Estimation<br/>예상 행 수 추정"]
+    CE_CHECK{"컬럼 간 Correlation / Skew<br/>정확히 반영되는가?"}
+    CE_ERR["핵심 병목: 수 자릿수 과소평가 발생<br/>(실제 40,000행 -> 추정 300행)"]
 
-    CM["2단계: Cost Model<br/>비용 계산 (영향력 제한적, 입력값에 종속)"]:::cloud
-    PE["3단계: Plan Space Enumeration<br/>DP 전수 탐색 수행"]:::cloud
-    RES["최종 결과: 왜곡된 Cardinality로 인해<br/>Hash Join 대신 비효율 NL Join 선택"]:::danger
-    OK["정상 결과: 최적 조인 순서 및 방식 도출"]:::storage
+    CM["2단계: Cost Model<br/>비용 계산 (영향력 제한적, 입력값에 종속)"]
+    PE["3단계: Plan Space Enumeration<br/>DP 전수 탐색 수행"]
+    RES["최종 결과: 왜곡된 Cardinality로 인해<br/>Hash Join 대신 비효율 NL Join 선택"]
+    OK["정상 결과: 최적 조인 순서 및 방식 도출"]
 
     Q --> CE --> CE_CHECK
     CE_CHECK -->|"No (실세계 데이터)"| CE_ERR --> CM --> PE --> RES
@@ -96,28 +92,25 @@ Cardinality Estimation은 전체 최적화 과정에서 가장 큰 오차를 발
 
 ```mermaid
 flowchart LR
-    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef process fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef entity fill:#FFFFFF,stroke:#424242,color:#212121;
 
     subgraph LD ["Left-Deep Tree (선형 누적 구조)"]
         direction TB
-        J3["Final Join"]:::process --> J2["Join Step 2"]:::process
-        J3 --> D1[("Table D")]:::storage
-        J2 --> J1["Join Step 1"]:::process
-        J2 --> C1[("Table C")]:::storage
-        J1 --> A1[("Table A")]:::storage
-        J1 --> B1[("Table B")]:::storage
+        J3["Final Join"] --> J2["Join Step 2"]
+        J3 --> D1[("Table D")]
+        J2 --> J1["Join Step 1"]
+        J2 --> C1[("Table C")]
+        J1 --> A1[("Table A")]
+        J1 --> B1[("Table B")]
     end
 
     subgraph BT ["Bushy Tree (독립 서브트리 결합 구조)"]
         direction TB
-        BJ["Final Join"]:::process --> BJ1["Sub Join 1 (A ⋈ B)"]:::process
-        BJ --> BJ2["Sub Join 2 (C ⋈ D)"]:::process
-        BJ1 --> A2[("Table A")]:::storage
-        BJ1 --> B2[("Table B")]:::storage
-        BJ2 --> C2[("Table C")]:::storage
-        BJ2 --> D2[("Table D")]:::storage
+        BJ["Final Join"] --> BJ1["Sub Join 1 (A ⋈ B)"]
+        BJ --> BJ2["Sub Join 2 (C ⋈ D)"]
+        BJ1 --> A2[("Table A")]
+        BJ1 --> B2[("Table B")]
+        BJ2 --> C2[("Table C")]
+        BJ2 --> D2[("Table D")]
     end
 ```
 <p align="center"><em>Figure 2: Left-Deep Tree와 Bushy Tree의 데이터 파이프라인 구조 비교</em></p>

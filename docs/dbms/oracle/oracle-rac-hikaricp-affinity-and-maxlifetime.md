@@ -80,22 +80,11 @@ flowchart LR
     HikariPool -. "풀 내부 무한 재사용 (신규 연결 없음)" .-> P2
     Advisory -. "신규 요청 없어 가중치 전달 불가" .-> HikariPool
 
-    classDef thread fill:#E1F5FE,stroke:#0288D1,stroke-width:1.2px,color:#01579B;
-    classDef pool fill:#FFF9C4,stroke:#FBC02D,stroke-width:1.5px,color:#5D4037;
-    classDef node1 fill:#FFCDD2,stroke:#D32F2F,stroke-width:2px,color:#B71C1C;
-    classDef node2 fill:#E8F5E9,stroke:#4CAF50,stroke-width:1.5px,color:#1B5E20;
-    classDef lba fill:#F3F4F6,stroke:#616161,stroke-width:1.2px,color:#212121;
-
     class T1,T2,TDots,T10 thread;
     class C1,C2,CDots,C10,PoolNote pool;
     class Node1,P1 node1;
     class Node2,P2 node2;
     class Advisory,LBA,LBANote lba;
-
-    style MultiBatch fill:#FAFAFA,stroke:#90CAF9,stroke-width:1.5px,stroke-dasharray: 6 4
-    style HikariPool fill:#FAFAFA,stroke:#FBC02D,stroke-width:1.5px,stroke-dasharray: 6 4
-    style RACCluster fill:#FAFAFA,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray: 6 4
-    style Advisory fill:#FFFFFF,stroke:#BDBDBD,stroke-width:1.2px
 ```
 <p align="center"><em>Figure 1: 멀티 스레드 배치의 10개 커넥션 초기 버스트 수립과 LBA 메트릭 무력화로 인한 단일 노드 쏠림</em></p>
 
@@ -195,17 +184,9 @@ flowchart LR
     SCAN2 -->|"부하 낮은 노드로 재할당"| N2
     C1 -.-> N1
 
-    classDef pool fill:#E1F5FE,stroke:#0288D1,stroke-width:1.2px,color:#01579B;
-    classDef scan fill:#FFF9C4,stroke:#FBC02D,stroke-width:1.5px,color:#5D4037;
-    classDef balanced fill:#E8F5E9,stroke:#4CAF50,stroke-width:1.5px,color:#1B5E20;
-
     class C1,C2,C3 pool;
     class SCAN2 scan;
     class N1,N2 balanced;
-
-    style PoolCycle fill:#FAFAFA,stroke:#90CAF9,stroke-width:1.5px,stroke-dasharray: 6 4
-    style ScanRouting fill:#FFFFFF,stroke:#BDBDBD,stroke-width:1.2px
-    style RACCluster fill:#FAFAFA,stroke:#81C784,stroke-width:1.5px,stroke-dasharray: 6 4
 ```
 <p align="center"><em>Figure 2: maxLifetime 단축을 통한 커넥션 주기적 교체 및 노드 로드밸런싱 복원</em></p>
 
@@ -271,14 +252,8 @@ flowchart LR
 
     Cost ==>|"이득이 비용을 압도함"| Benefit
 
-    classDef costStyle fill:#FFEBEE,stroke:#E53935,stroke-width:1.2px,color:#B71C1C;
-    classDef benefitStyle fill:#E8F5E9,stroke:#4CAF50,stroke-width:1.5px,color:#1B5E20;
-
     class C_TCP,C_GC costStyle;
     class B_CPU,B_Time benefitStyle;
-
-    style Cost fill:#FAFAFA,stroke:#E57373,stroke-width:1.5px,stroke-dasharray: 6 4
-    style Benefit fill:#FAFAFA,stroke:#81C784,stroke-width:1.5px,stroke-dasharray: 6 4
 ```
 <p align="center"><em>Figure 3: 주기적 커넥션 회전 도입 시 트레이드오프(비용 vs 이득) 분석</em></p>
 

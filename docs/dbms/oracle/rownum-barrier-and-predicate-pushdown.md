@@ -10,7 +10,7 @@ reading_time: "약 9분"
 # SELECT절 ROWNUM 추가 시 Predicate Pushing이 차단되는 내부 메커니즘
 
 운영 환경에서 대규모 주문 및 결제 데이터를 집계하는 쿼리를 다루다 보면 이해하기 어려운 성능 저하를 마주할 때가 있다.  
-비즈니스 로직이나 조인 조건은 전혀 바꾸지 않고, 단지 화면 그리드에 1부터 순번을 표시하겠다는 목적으로 `SELECT` 절에 `ROWNUM` 컬럼 하나를 추가했을 뿐인데, 0.01초 만에 끝나던 쿼리가 20초 이상 멈춰 서며 Data Buffer Cache와 PGA를 잠식하는 현상이다.
+비즈니스 로직이나 조인 조건은 전혀 바꾸지 않고, 단지 화면 그리드에 1부터 순번을 표시하겠다는 목적으로 `SELECT` 절에 `ROWNUM` 컬럼 하나를 추가했을 뿐인데, 0.01초 만에 끝나던 쿼리가 20초 이상 느려진 현상이 발견되었다.
 
 실행 계획을 확인해 보면 정상적으로 작동하던 **Join Predicate Pushdown (JPPD)**이 자취를 감추고, 후행 인라인 뷰(Inline View) 전체가 거대한 독립 블록으로 격리되어 수천만 건의 데이터를 `Full Table Scan` 후 해시 집계하고 있는 모습을 보게 된다.
 
@@ -110,11 +110,6 @@ flowchart LR
     V1 --- T2
     V1 --> V2
 
-    classDef default fill:#FFFFFF,stroke:#424242,color:#212121;
-    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef compute fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef network fill:#E1F5FE,stroke:#0288D1,color:#01579B;
-
     class T1,T2 storage;
     class M1,M2,V1,V2 compute;
     class Client network;
@@ -207,11 +202,6 @@ flowchart LR
 
     IV3 -->|"수천만 건 집계 결과"| HJ
     MD2 -->|"100건 매칭"| HJ
-
-    classDef default fill:#FFFFFF,stroke:#424242,color:#212121;
-    classDef storage fill:#E8F5E9,stroke:#4CAF50,color:#1B5E20;
-    classDef compute fill:#FFF9C4,stroke:#FBC02D,color:#5D4037;
-    classDef alert fill:#FFEBEE,stroke:#E53935,color:#B71C1C;
 
     class IV1,IV2,IV3 alert;
     class MD1,MD2 compute;

@@ -50,21 +50,10 @@ flowchart TB
         end
     end
 
-    classDef headerStyle fill:#F3F4F6,stroke:#4B5563,stroke-width:1.2px,color:#111827;
-    classDef itlStyle fill:#FFF9C4,stroke:#FBC02D,stroke-width:1.2px,color:#5D4037;
-    classDef freeStyle fill:#E8F5E9,stroke:#4CAF50,stroke-width:1.2px,color:#1B5E20;
-    classDef bodyStyle fill:#E1F5FE,stroke:#0288D1,stroke-width:1.2px,color:#01579B;
-
     class HeaderMeta headerStyle;
     class ITL1,ITL2,ITLN itlStyle;
     class FreeDesc freeStyle;
     class RowDesc bodyStyle;
-
-    style DataBlock fill:#FAFAFA,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray: 6 4
-    style Header fill:#FFFFFF,stroke:#BDBDBD,stroke-width:1.2px
-    style ITL fill:#FFFDE7,stroke:#FBC02D,stroke-width:1.2px,stroke-dasharray: 4 4
-    style FreeSpace fill:#FFFFFF,stroke:#BDBDBD,stroke-width:1.2px
-    style Body fill:#FFFFFF,stroke:#BDBDBD,stroke-width:1.2px
 ```
 <p align="center"><em>Figure 1: 8KB 데이터 블록 내부의 물리 계층 구조 및 ITL 슬롯 배치</em></p>
 
@@ -85,11 +74,6 @@ flowchart TD
     D -- "공간 있음" --> E["PCTFREE에서 24B 할당하여<br/>ITL 슬롯 동적 생성 (동적 확장)"]
     D -- "공간 고갈됨 (0%)" --> F["대기 상태 진입<br/>enq: TX - allocate ITL entry"]
     F --> G["선행 트랜잭션 중 하나가 COMMIT할 때까지 블로킹"]
-
-    classDef normal fill:#E8F5E9,stroke:#4CAF50,stroke-width:1.5px,color:#1B5E20;
-    classDef branch fill:#FFF9C4,stroke:#FBC02D,stroke-width:1.5px,color:#5D4037;
-    classDef alert fill:#FFCDD2,stroke:#D32F2F,stroke-width:1.5px,color:#B71C1C;
-    classDef action fill:#E1F5FE,stroke:#0288D1,stroke-width:1.5px,color:#01579B;
 
     class A action;
     class B,D branch;
@@ -138,14 +122,6 @@ flowchart LR
         E_H --- E_D --- E_R
     end
 
-    classDef normalBox fill:#E8F5E9,stroke:#4CAF50,stroke-width:1.2px,color:#1B5E20;
-    classDef normalData fill:#FFFFFF,stroke:#4CAF50,stroke-width:1.2px,color:#1B5E20;
-    classDef normalRes fill:#C8E6C9,stroke:#388E3C,stroke-width:1.5px,color:#1B5E20;
-
-    classDef excessBox fill:#FFEBEE,stroke:#E53935,stroke-width:1.2px,color:#B71C1C;
-    classDef excessData fill:#FFFFFF,stroke:#E53935,stroke-width:1.2px,color:#B71C1C;
-    classDef excessRes fill:#FFCDD2,stroke:#C62828,stroke-width:1.5px,color:#B71C1C;
-
     class N_H normalBox;
     class N_D normalData;
     class N_R normalRes;
@@ -153,9 +129,6 @@ flowchart LR
     class E_H excessBox;
     class E_D excessData;
     class E_R excessRes;
-
-    style Normal fill:#F1F8E9,stroke:#81C784,stroke-width:1.5px,stroke-dasharray: 6 4
-    style Excess fill:#FBE9E7,stroke:#E57373,stroke-width:1.5px,stroke-dasharray: 6 4
 ```
 <p align="center"><em>Figure 3: INITRANS 설정에 따른 단일 8KB 블록 내 가용 공간 잠식 비교</em></p>
 
@@ -177,18 +150,10 @@ flowchart LR
         B2 -->|"부하 팽창"| R2["I/O 60% 급증, 캐시 밀도 저하"]
     end
 
-    classDef norm fill:#E8F5E9,stroke:#4CAF50,stroke-width:1.2px,color:#1B5E20;
-    classDef normBlk fill:#C8E6C9,stroke:#2E7D32,stroke-width:1.5px,color:#1B5E20;
-    classDef warn fill:#FFEBEE,stroke:#E53935,stroke-width:1.2px,color:#B71C1C;
-    classDef warnBlk fill:#FFCDD2,stroke:#C62828,stroke-width:1.5px,color:#B71C1C;
-
     class D1,R1 norm;
     class B1 normBlk;
     class D2,R2 warn;
     class B2 warnBlk;
-
-    style CaseA fill:#FAFAFA,stroke:#81C784,stroke-width:1.5px,stroke-dasharray: 6 4
-    style CaseB fill:#FAFAFA,stroke:#E57373,stroke-width:1.5px,stroke-dasharray: 6 4
 ```
 <p align="center"><em>Figure 4: 동일 레코드 건수 저장 시 INITRANS 과대 설정에 의한 세그먼트 팽창 비교</em></p>
 
@@ -244,16 +209,9 @@ flowchart LR
     Tx3 ==>|"Right-hand 쏠림"| L3
     TxN ==>|"Right-hand 쏠림"| L3
 
-    classDef tx fill:#E1F5FE,stroke:#0288D1,stroke-width:1.2px,color:#01579B;
-    classDef tree fill:#F3F4F6,stroke:#4B5563,stroke-width:1.2px,color:#111827;
-    classDef hotspot fill:#FFCDD2,stroke:#D32F2F,stroke-width:2px,color:#B71C1C;
-
     class Tx1,Tx2,Tx3,TxN tx;
     class Root,Branch,L1,L2 tree;
     class L3 hotspot;
-
-    style Sessions fill:#FAFAFA,stroke:#90CAF9,stroke-width:1.5px,stroke-dasharray: 6 4
-    style BTree fill:#FAFAFA,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray: 6 4
 ```
 <p align="center"><em>Figure 5: 순차 증가 PK 환경에서 발생하는 Right-hand Leaf Block 경합 구조</em></p>
 
@@ -299,19 +257,10 @@ flowchart LR
     P_New ==>|"포인터 바인딩"| E_New
     P3 -.-> E3
 
-    classDef ptr fill:#FFF9C4,stroke:#FBC02D,stroke-width:1.2px,color:#5D4037;
-    classDef newPtr fill:#FFE082,stroke:#F57C00,stroke-width:2px,color:#E65100;
-    classDef entry fill:#E1F5FE,stroke:#0288D1,stroke-width:1.2px,color:#01579B;
-    classDef newEntry fill:#B3E5FC,stroke:#0277BD,stroke-width:2px,color:#01579B;
-
     class P1,P2,P3 ptr;
     class P_New newPtr;
     class E1,E2,E3 entry;
     class E_New newEntry;
-
-    style LeafBlock fill:#FAFAFA,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray: 6 4
-    style Header fill:#FFFFFF,stroke:#BDBDBD,stroke-width:1.2px
-    style Body fill:#FFFFFF,stroke:#BDBDBD,stroke-width:1.2px
 ```
 <p align="center"><em>Figure 6: 인덱스 리프 블록 내부의 Slot Directory 포인터 조작을 통한 정렬 메커니즘</em></p>
 
@@ -419,15 +368,9 @@ flowchart LR
         S4 --> S5["5. IPC Post 신호 전송<br/>(LGWR → Foreground)"]
     end
 
-    classDef ipc fill:#E1F5FE,stroke:#0288D1,stroke-width:1.5px,color:#01579B;
-    classDef cpu fill:#FFF9C4,stroke:#FBC02D,stroke-width:1.5px,color:#5D4037;
-    classDef diskIo fill:#FFCDD2,stroke:#D32F2F,stroke-width:2px,color:#B71C1C;
-
     class S1,S4,S5 ipc;
     class S2 cpu;
     class S3 diskIo;
-
-    style TotalSync fill:#FAFAFA,stroke:#9E9E9E,stroke-width:1.5px,stroke-dasharray: 6 4
 ```
 <p align="center"><em>Figure 8: log file sync 대기 시간의 내부 소요 구간 분해</em></p>
 
@@ -443,11 +386,6 @@ flowchart TD
     
     Check2 -- "CPU 90% 이상 포화" --> Case2["OS 스케줄링 지연<br/>- LGWR 프로세스가 CPU를 제때 할당받지 못함<br/>- LGWR CPU 우선순위 밀림"]
     Check2 -- "CPU 여유 있음" --> Case3["과도한 Commit 빈도 또는 IPC 지연<br/>- 반복 Loop 내 건별 Commit 남발<br/>- 다중 프로세스 간 통신 병목"]
-
-    classDef checkNode fill:#FFF9C4,stroke:#FBC02D,stroke-width:1.5px,color:#5D4037;
-    classDef ioBottleneck fill:#FFCDD2,stroke:#D32F2F,stroke-width:1.5px,color:#B71C1C;
-    classDef cpuBottleneck fill:#FFE0B2,stroke:#FB8C00,stroke-width:1.5px,color:#E65100;
-    classDef commitBottleneck fill:#E1F5FE,stroke:#0288D1,stroke-width:1.5px,color:#01579B;
 
     class Start,Check,Check2 checkNode;
     class Case1 ioBottleneck;
