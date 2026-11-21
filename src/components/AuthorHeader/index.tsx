@@ -11,7 +11,7 @@ interface AuthorProfile {
 const AUTHORS_DATA: Record<string, AuthorProfile> = {
   deejay: {
     name: 'Dongju Lee',
-    title: 'Oracle DBA & AI Architecture Specialist',
+    title: 'Oracle DBA',
     url: 'https://github.com/djpibo',
     image_url: 'https://github.com/djpibo.png',
   },

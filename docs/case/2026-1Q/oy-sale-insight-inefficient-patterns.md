@@ -1,6 +1,6 @@
 ---
 id: oy-sale-insight-inefficient-patterns
-title: "올영세일 회고 2편: 병목을 유발하는 SQL 비효율 패턴 4가지"
+title: "병목을 유발하는 SQL 비효율 패턴 4가지"
 sidebar_label: 2편 - 비효율 SQL 패턴 분석
 sidebar_position: 3
 date: "2026년 9월 5일"
@@ -137,5 +137,3 @@ graph TD
 ## 5. 결론 및 회고
 
 평상시에는 사소해 보이는 쿼리 한 줄의 `buffer_gets` 비효율이나 수 밀리초의 지연이라도, 동시 요청이 만 단위로 치솟는 트래픽 환경에서는 Connection Pool 고갈과 메모리 래치 경합으로 번져 전체 시스템의 가용성을 위협한다.
-
-다음 3편에서는 이러한 성능 문제를 해결하는 접근법인 **언어적 관점과 수학적 관점의 차이**를 정리한다.
