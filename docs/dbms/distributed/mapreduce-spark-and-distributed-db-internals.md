@@ -7,7 +7,7 @@ date: "2026년 11월 14일"
 reading_time: "약 14분"
 ---
 
-MapReduce와 Spark의 차이를 흔히 Disk 기반과 Memory 기반의 차이로만 요약하곤 한다. 하지만 실제 대용량 배치를 운영해 보면, 두 엔진의 처리 성능 차이는 단순한 저장 매체의 속도 차이보다 JVM 프로세스 생명주기 관리, Memory Layout(On-Heap 대 Off-Heap), 그리고 데이터 파이프라인(DAG) 실행 방식의 구조적 차이에서 발생한다.
+MapReduce와 Spark의 차이를 흔히 Disk 기반과 Memory 기반의 차이로만 요약하곤 한다. 하지만 실제 대용량 배치를 운영해 보면, 두 엔진의 처리 성능 차이는 단순한 저장 매체의 속도 차이보다 JVM 프로세스 생명주기 관리, Memory Layout(On-Heap vs Off-Heap), 그리고 데이터 파이프라인(DAG) 실행 방식의 구조적 차이에서 발생한다.
 
 본 글에서는 JVM 실행 컨테이너와 In-Memory Pipelining 관점에서 MapReduce와 Spark의 내부 동작 원리를 대조하고, 나아가 Snowflake나 ClickHouse 같은 분산 분석 DB(MPP/OLAP)와 어떤 지점에서 Spark와 아키텍처적 지향점을 달리하는지, 또 실시간 트랜잭션 서비스에는 왜 MongoDB가 유리한지 정리한다.
 
@@ -67,25 +67,30 @@ Java에서 4바이트 문자열(`"abcd"`) 하나를 `java.lang.String` 객체로
 이 문제를 해결하기 위해 Spark는 `Project Tungsten`을 통해 데이터를 JVM On-Heap 객체가 아닌 Off-Heap(OS Native Memory)의 연속된 바이트 배열에 직접 배치하는 구조를 도입했다. (단, 반쪽자리 Off-Heap 사용이기 때문에 C++ Native 엔진(Photon, Gluten/Velox)을 사용해 한 단계 더 최적화를 진행한다. 자세한건 하단 별도 후술)
 
 ```mermaid
-flowchart LR
+sequenceDiagram
+    participant CPU as CPU Core
+    participant Cache as L1 / L2 Cache<br/>(64B Line, ~1ns)
+    participant OnHeap as RAM: JVM On-Heap<br/>(GC 관리, ~80ns)
+    participant OffHeap as RAM: OS Off-Heap<br/>(GC 제외, ~80ns)
 
-    subgraph ON_HEAP ["1. 일반 JVM On-Heap: 객체 파편화 및 Pointer Chasing"]
-        direction LR
-        ROW_OBJ["Row 객체 헤더 (16B)<br/>주소: 0x1000"]
-        STR_OBJ["String 객체 헤더 (24B)<br/>주소: 0x5A00 (멀리 떨어짐)"]
-        CHAR_ARR["byte[] 실제 문자열<br/>주소: 0x9F00 (또 점프)"]
-        ROW_OBJ -->|"포인터 참조 (Cache Miss)"| STR_OBJ
-        STR_OBJ -->|"포인터 참조 (Cache Miss)"| CHAR_ARR
-    end
-
-    subgraph OFF_HEAP ["2. Spark Off-Heap: 연속된 메모리 배치 및 L1/L2 Cache 적중"]
-        direction LR
-        CONT_MEM[("OS Native Memory (GC 대상 제외)<br/>주소 0x2000부터 연속 배치:<br/>[1001 | 50000 | 'APPLE']")]
-        CPU_CACHE["CPU L1/L2 Cache (64B Cache Line)<br/>한 번 읽을 때 인접 데이터 통째로 적재"]
-        CONT_MEM -->|"포인터 점프 없이 순차 로드"| CPU_CACHE
+    alt 1. 일반 JVM On-Heap (RAM 3회 왕복 + Pointer Chasing + GC 부담)
+        CPU->>Cache: id, name 읽기 요청
+        Cache->>OnHeap: 1차 RAM 조회 (0x1000: Row 객체 헤더)
+        OnHeap-->>Cache: 64B 적재 (실제 name은 다른 주소 -> Cache Miss)
+        Cache->>OnHeap: 2차 RAM 조회 (0x5A00: String 객체 헤더)
+        OnHeap-->>Cache: 64B 적재 (실제 글자는 또 다른 주소 -> Cache Miss)
+        Cache->>OnHeap: 3차 RAM 조회 (0x9F00: byte[] 실제 글자)
+        OnHeap-->>CPU: 3회 RAM 점프 끝에 'APPLE' 획득 (약 240-300ns)
+        Note over OnHeap: JVM GC가 수억 개 객체 참조를 스캔하며 Stop-the-World 유발
+    else 2. Spark Off-Heap UnsafeRow (RAM 단 1회 조회 + 이후 1ns Cache Hit + GC 없음)
+        CPU->>Cache: id, price, name 읽기 요청
+        Cache->>OffHeap: 단 1회 RAM 조회 (0x2000부터 64B 연속 블록)
+        OffHeap-->>Cache: [1001 | 50000 | 'APPLE'] 한 덩어리로 L1/L2 Cache 적재
+        Cache-->>CPU: id(1ns) -> price(1ns) -> name(1ns) 즉시 반환 (100% Cache Hit)
+        Note over OffHeap: JVM GC 관리 영역 바깥 -> GC 스캔 대상 0건
     end
 ```
-<p align="center"><em>Figure 2: JVM On-Heap의 객체 파편화 구조와 Spark Off-Heap의 연속 메모리 배치 및 CPU 캐시 효율 비교</em></p>
+<p align="center"><em>Figure 2: CPU Core, L1/L2 Cache, JVM On-Heap, OS Off-Heap 물리 공간 간 데이터 조회 왕복 횟수 및 지연 비교</em></p>
 
 #### 왜 Off-Heap이 유리하며 CPU L1/L2 Cache Locality가 높아지는가?
 1. GC 오버헤드 완전 제거:
