@@ -222,7 +222,7 @@ sequenceDiagram
 `Filter -> Map -> Filter -> Map -> GroupBy`로 이어지는 처리 파이프라인을 가정해 본다.
 
 #### MapReduce: Rigid Map-Reduce 패러다임
-모든 비즈니스 로직을 반드시 `Map`과 `Reduce`라는 두 단계의 틀에 맞춰 쪼개야 한다. 복합 조인이나 다단계 집계를 수행하려면 여러 개의 MapReduce Job을 직렬로 연결해야 한다.
+모든 비즈니스 로직을 반드시 `Map`과 `Reduce`라는 두 단계의 틀에 맞춰 쪼개야 한다. 복합 조인이나 멀티 레이어 집계를 수행하려면 여러 개의 MapReduce Job을 직렬로 연결해야 한다.
 이때 선행 Job이 끝나면 그 결과를 반드시 HDFS에 기록하는데 3중으로 복제 네트워크 I/O 동반되며 후속 Job이 다시 HDFS에서 이를 읽어 들여야 한다. 연산 단계가 늘어날수록 중간 결과물의 Disk 및 네트워크 I/O 비용이 선형적으로 증가한다.
 
 #### Spark: DAG 기반 Stage 분할과 Whole-Stage Code Generation
@@ -284,13 +284,13 @@ Spark가 MapReduce의 한계를 극복하고 빅데이터 표준 엔진으로 �
    Spark는 작업 도중 노드가 죽어도 처음부터 다시 돌리지 않기 위해, 모든 Stage가 끝날 때마다 중간 Shuffle 결과를 로컬 디스크에 파일로 쓴다. 이 안전장치가 몇 초 만에 끝나야 하는 실시간 분석 쿼리에서는 오히려 디스크 I/O 병목이 된다.
 
 #### (2) 그럼에도 Databricks와 엔터프라이즈가 Spark를 사용하는 이유 (일반 조회 대 대규모 조인·집계의 구조적 차이)
-단순히 조건에 맞는 데이터를 필터링해서 보여주는 일반 조회(`SELECT ... WHERE`)와 달리, 수십 테라바이트 규모의 테이블 여러 개를 결합하는 대규모 조인(`JOIN`)이나 수억 개의 고유 키를 묶는 다단계 집계(`GROUP BY`)에서는 분산 분석 DB가 치명적인 구조적 한계를 드러낸다.
+단순히 조건에 맞는 데이터를 필터링해서 보여주는 일반 조회(`SELECT ... WHERE`)와 달리, 수십 테라바이트 규모의 테이블 여러 개를 결합하는 대규모 조인(`JOIN`)이나 수억 개의 고유 키를 묶는 멀티 레이어 집계(`GROUP BY`)에서는 분산 분석 DB가 치명적인 구조적 한계를 드러낸다.
 
 1. 대규모 조인(JOIN)과 집계(Aggregation)에서의 메모리 한계와 중단 위험:
    - 일반 단순 조회는 각 워커 노드가 자기 디스크에 있는 데이터만 읽어서 필터링한 뒤 바로 결과를 내면 되므로 노드 간 데이터 이동(Shuffle)이 거의 없다. 이 영역에서는 C++ SIMD와 전용 인덱스를 가진 ClickHouse나 Snowflake가 압도적으로 빠르다.
    - 하지만 수십 테라바이트짜리 두 테이블을 `JOIN`하거나 높은 카디널리티 컬럼(예: 수억 명의 고유한 `user_id`)으로 `GROUP BY`를 수행할 때는, 모든 노드가 네트워크로 데이터를 교차 전송(Shuffle)하고 메모리에 거대한 해시 테이블(Hash Table)을 지어야 한다.
    - ClickHouse 같은 실시간 OLAP DB는 속도를 위해 조인 대상 테이블과 집계 해시 테이블을 인메모리에 올리도록 설계되어 있어, 대용량 테이블 간 조인 시 메모리 제한(OOM)에 걸려 쿼리 자체가 죽어버리는 일이 빈번하다. Snowflake 역시 중간 결과를 디스크에 체크포인트하지 않고 메모리 스트리밍으로 넘기다가 메모리가 부족해지면 원격 스토리지(S3)로 Spill되면서 속도가 급격히 떨어지거나, 1시간짜리 배치 도중 노드 1대만 문제가 생겨도 쿼리 전체를 처음부터 다시 돌려야 한다.
-   - 반면 Spark는 처음부터 메모리가 부족하면 로컬 디스크로 안전하게 데이터를 내려쓰며 정렬·병합하는 외부 정렬 병합 조인(External Sort-Merge Join)과 단계별 Shuffle 파일 영속화를 기본으로 설계했다. 덕분에 시간이 조금 더 걸리더라도 수십 테라바이트의 다단계 조인과 집계를 실패 없이 끝까지 완주해 낸다.
+   - 반면 Spark는 처음부터 메모리가 부족하면 로컬 디스크로 안전하게 데이터를 내려쓰며 정렬·병합하는 외부 정렬 병합 조인(External Sort-Merge Join)과 단계별 Shuffle 파일 영속화를 기본으로 설계했다. 덕분에 시간이 조금 더 걸리더라도 수십 테라바이트의 멀티 레이어 조인과 집계를 실패 없이 끝까지 완주해 낸다.
 2. SQL을 넘어선 범용 프로그래밍과 단일 통합 파이프라인:
    Snowflake나 ClickHouse는 `정형화된 테이블`에 대해 SQL로 조회하는 데 국한된다. 반면 실무 데이터 엔지니어링에서는 비정형 텍스트·이미지·복잡한 중첩 JSON 로그를 코드로 파싱하거나, 외부 API를 호출하고, 머신러닝(ML) 피처 엔지니어링을 수행해야 한다. Spark는 하나의 엔진에서 대규모 ETL, 스트리밍 처리, ML/AI 파이프라인을 Python/Scala 코드로 자유롭게 구현할 수 있다.
 
@@ -669,7 +669,7 @@ MongoDB의 핵심 설계 철학은 "읽을 때 비싼 JOIN이나 배열 재조�
 - Spark는 장애 복구(안정성)를 위해 워커 노드의 로컬 디스크에 Shuffle 파일을 쓰느라 속도가 느려진다.
 - Snowflake와 ClickHouse는 속도를 위해 워커 노드의 메모리로 직접 스트리밍하지만, 메모리가 부족하거나 도중에 노드 1대만 죽어도 쿼리 전체를 처음부터 다시 실행해야 한다.
 
-BigQuery는 이 딜레마를 스토리지, 연산(Compute Slot), 그리고 중간 Shuffle 메모리를 아예 물리적으로 다른 서버 클러스터로 쪼개는 3단 분리(Disaggregated Architecture)로 해결했다.
+BigQuery는 이 딜레마를 `스토리지`, `연산(Compute Slot)`, 그리고 `중간 Shuffle 메모리`를 아예 물리적으로 다른 서버 클러스터로 쪼개는 3단 분리(Disaggregated Architecture)로 해결했다.
 
 ```mermaid
 sequenceDiagram
@@ -684,13 +684,13 @@ sequenceDiagram
     Leaf--xLeaf: 만약 Leaf Slot 1대에 장애가 발생해도 Shuffle 데이터는 보존됨
     Shuffle->>Mixer: 새 Slot 즉시 투입 및 안전하게 이어서 조인·집계 완료
 ```
-<p align="center"><em>Figure 12: BigQuery의 스토리지·연산 Slot·독립 인메모리 Shuffle 3단 분리 시퀀스</em></p>
+<p align="center"><em>Figure 12: BigQuery의 스토리지/연산 Slot/독립 인메모리 Shuffle 3단 분리 시퀀스</em></p>
 
 이 독립된 인메모리 Shuffle 계층 덕분에 BigQuery는 두 가지 이점을 동시에 확보한다.
 1. 디스크 I/O 없는 인메모리 Shuffle 속도:
    연산 워커(`Slot`)는 중간 결과를 로컬 디스크에 쓰지 않고, Google 데이터센터의 초고속 네트워크(`Jupiter`)를 통해 전용 Shuffle 클러스터의 RAM에 바로 밀어 넣는다.
 2. Spark 수준의 부분 장애 복구(Fault Tolerance):
-   연산 워커(`Slot`)와 Shuffle 데이터를 보관하는 메모리 노드가 물리적으로 분리되어 있다. 따라서 1시간짜리 초대형 조인 도중 연산을 수행하던 특정 `Slot`이 죽더라도, 이미 계산된 중간 데이터는 독립된 Shuffle 메모리 계층에 그대로 살아 있다. BigQuery 스케줄러는 쿼리를 취소하지 않고 새로운 `Slot`을 즉시 띄워 죽은 작업만 몇 밀리초 만에 이어서 끝낸다.
+   연산 워커(`Slot`)와 Shuffle 데이터를 보관하는 메모리 노드가 물리적으로 분리되어 있다. 따라서 1시간짜리 초대형 조인 도중 연산을 수행하던 특정 `Slot`이 죽더라도, 이미 계산된 중간 데이터는 독립된 Shuffle 메모리 계층에 그대로 남아 있다. BigQuery 스케줄러는 쿼리를 취소하지 않고 새로운 `Slot`을 즉시 띄워 중단된 작업만 이어서 끝낸다.
 
 ### 6.2 저장 구조(`Capacitor`): MongoDB의 계층 문서와 Columnar의 결합
 
@@ -700,15 +700,15 @@ sequenceDiagram
 
 BigQuery는 이 문제를 `Dremel Encoding`(현재의 `Capacitor` 스토리지 포맷)으로 해결했다. 논리적으로는 MongoDB처럼 한 행 안에 중첩 배열(`ARRAY`)과 객체(`STRUCT`)를 통째로 집어넣어 `JOIN`을 없애면서도, 물리적인 디스크(`Colossus`)에는 모든 하위 필드를 세로 컬럼 배열로 완전히 분해해서 저장한다.
 
-- 값을 세로 배열로 저장할 때 값 옆에 `Repetition Level`(어느 배열 깊이에서 반복되었는가)과 `Definition Level`(어느 깊이까지 NULL이 아닌가)이라는 1-2비트짜리 작은 정수 태그만 함께 기록한다.
-- 덕분에 사용자 입장에서는 MongoDB처럼 중첩 문서 구조를 그대로 써서 비싼 테이블 `JOIN`을 피할 수 있으면서도, `SELECT SUM(items.price)`를 실행하면 디스크에서 오직 `items.price` 세로 배열만 읽어 C++ SIMD로 초고속 합계를 낼 수 있다.
-- 나아가 `Capacitor` 포맷은 파일을 저장할 때 컬럼 값들의 패턴을 분석해 같은 값들이 최대한 연속되도록 행의 순서를 자동으로 재배치(Row Reordering)하여 압축률(RLE)을 높이고, 데이터를 압축 해제하지 않은 상태 그대로 CPU 레지스터에서 비교·필터링하는 기술까지 적용되어 있다.
+- 값을 세로 배열로 저장할 때 값 옆에 어느 배열 깊이에서 반복되었는가를 나타내는 `Repetition Level`과 어느 깊이까지 NULL이 아닌가를 나타내는 `Definition Level`이라는 1-2비트짜리 작은 정수 태그만 함께 기록한다.
+- 덕분에 사용자 입장에서는 MongoDB처럼 중첩 문서 구조를 그대로 써서 비싼 `JOIN` 대신 반정규화된 포맷을 저장할 수 있으면서도 `SELECT SUM(items.price)`를 실행하면 디스크에서 오직 `items.price` 세로 배열만 읽어 C++ SIMD 연산으로 빠르게 합계를 낼 수 있다.
+- 나아가 `Capacitor` 포맷은 파일을 저장할 때 컬럼 값들의 패턴을 분석해 같은 값들이 최대한 연속되도록 행의 순서를 자동으로 재배치하여 압축률을 높이고 데이터를 압축 해제하지 않은 상태 그대로 CPU 레지스터에서 비교 및 필터링하는 기술까지 적용되어 있다.
 
-### 6.3 실행 토폴로지: 고정된 워커 클러스터 대 다단계 `Serving Tree`
+### 6.3 실행 토폴로지: 고정된 워커 클러스터 대 멀티 레이어 `Serving Tree`
 
 Spark나 Snowflake, ClickHouse는 쿼리를 돌리기 전에 사용자가 워커 노드 대수나 웨어하우스 크기를 먼저 정한다. 그러면 1대의 마스터(Driver/Coordinator)가 고정된 워커들에게 일을 시키고 결과를 모으는 2단 구조로 동작한다.
 
-반면 BigQuery는 사용자가 서버 대수를 지정하지 않는 완전한 멀티테넌트 Serverless 아키텍처이며, 쿼리를 실행할 때 다단계 트리 구조(`Serving Tree`)를 사용한다.
+반면 BigQuery는 사용자가 서버 대수를 지정하지 않는 완전한 멀티테넌트 Serverless 아키텍처이며 쿼리를 실행할 때 멀티 레이어 트리 구조(`Serving Tree`)를 사용한다.
 
 ```mermaid
 flowchart TD
@@ -726,21 +726,21 @@ flowchart TD
     L1 --> COL
     L2 --> COL
 ```
-<p align="center"><em>Figure 13: 수천 개의 탄력적 Slot을 조율하는 BigQuery Dremel의 다단계 Serving Tree 구조</em></p>
+<p align="center"><em>Figure 13: 수천 개의 탄력적 Slot을 조율하는 BigQuery Dremel의 멀티 레이어 Serving Tree 구조</em></p>
 
-1. 다단계 중간 집계 계층(`Root -> Mixer -> Leaf`):
+1. 멀티 레이어 중간 집계 계층(`Root -> Mixer -> Leaf`):
    BigQuery는 페타바이트급 쿼리 하나를 몇 초 안에 끝내기 위해 순간적으로 수천 개의 `Slot`을 동시에 투입한다. 수천 개의 `Leaf` 노드가 계산한 결과를 1대의 마스터 서버(`Root`)로 동시에 보내면 마스터의 네트워크와 메모리가 즉시 포화되므로, 중간에 `Mixer` 계층을 두어 수천 개의 결과를 단계별로 압축·합산하면서 위로 올려보낸다.
 2. 런타임 동적 실행 계획 수정(Dynamic Execution Plan):
    쿼리를 시작할 때는 100개의 `Slot`으로 출발했더라도, 중간에 특정 테이블 조인 결과가 예상보다 100배 커진 것이 감지되면 쿼리를 멈추지 않고 실행 도중에 즉석에서 `Slot`을 2,000개로 늘리고 조인 방식(Broadcast Join에서 Hash Shuffle Join으로)을 실시간으로 전환한다.
 
 ### 6.4 BigQuery의 구조적 한계와 트레이드오프
 
-거대한 Serverless 아키텍처를 가진 BigQuery도 물리적인 트레이드오프 때문에 ClickHouse나 Spark에 밀리는 영역이 명확히 존재한다.
+거대한 Serverless 아키텍처를 가진 BigQuery도 물리적인 트레이드오프 때문에 ClickHouse나 Spark에 밀리는 점이 존재한다.
 
-1. 0.1초 이하의 초저지연(Sub-second) 실시간 쿼리 불가 (ClickHouse 대비 한계):
-   BigQuery는 쿼리가 들어오면 멀티테넌트 풀에서 수천 개의 `Slot`을 스케줄링하고, 다단계 `Serving Tree`를 구성한 뒤, 원격 분산 스토리지(`Colossus`)에서 데이터를 가져온다. 이 기본 준비 과정 때문에 단 10줄짜리 작은 테이블을 조회해도 최소 0.5-1.5초의 기본 시작 지연(Base Latency)이 깔린다. 반면 로컬 NVMe SSD와 RAM Sparse Index를 쓰는 ClickHouse는 수억 건에서도 10-50ms 만에 응답을 반환하므로, 대고객 웹 화면에서 초당 수천 번 호출되는 실시간 차트 API 용도로는 ClickHouse가 적합하다.
-2. 세밀한 포인트 조회(Point Lookup)에 취약한 블록 스캔 구조:
-   전통적인 B-Tree 인덱스가 없고, 날짜 기준 `Partitioning`과 최대 4개 컬럼 기준 블록 정렬인 `Clustering`에만 의존해 불필요한 블록을 건너뛴다. 파티션 조건을 빠뜨리거나 클러스터링되지 않은 일반 컬럼으로 몇 건의 데이터를 찾으려고 하면 수 테라바이트의 컬럼 블록 전체를 풀 스캔한다. On-Demand 요금제에서는 스캔한 데이터 용량(TB당 과금)대로 요금이 부과되므로 비용 사고로 이어지기 쉽다.
+1. 준비 과정으로 인한 0.1초 이하의 초저지연 실시간 쿼리 응답 불가 (ClickHouse 대비 한계):
+   BigQuery는 쿼리가 들어오면 멀티테넌트 풀에서 수천 개의 `Slot`을 스케줄링하고, 멀티 레이어 `Serving Tree`를 구성한 뒤, 원격 분산 스토리지(`Colossus`)에서 데이터를 가져온다. 이 기본 준비 과정 때문에 단 10줄짜리 작은 테이블을 조회해도 최소 0.5-1.5초의 기본 시작 지연(Base Latency)이 깔린다. 반면 로컬 NVMe SSD와 RAM Sparse Index를 쓰는 ClickHouse는 수억 건에서도 10-50ms 만에 응답을 반환하므로, 대고객 웹 화면에서 초당 수천 번 호출되는 실시간 API 용도로는 ClickHouse가 적합하다.
+2. 세밀한 시점 조회에 취약한 블록 스캔 구조:
+   전통적인 B-Tree 인덱스가 없고, 날짜 기준 `Partitioning`과 최대 4개 컬럼 기준 블록 정렬인 `Clustering`에만 의존해 불필요한 블록을 건너뛴다. 파티션 조건을 빠뜨리거나 클러스터링되지 않은 일반 컬럼으로 몇 건의 데이터를 찾으려고 하면 수 테라바이트의 컬럼 블록 전체를 풀 스캔한다. On-Demand 요금제에서는 스캔한 데이터 용량대로 요금이 부과되므로 비용 사고로 이어지기 쉽다.
 3. 비정형 데이터 가공 및 유연한 코드 실행의 한계 (Spark 대비 한계):
    철저히 SQL 중심의 분석 엔진이다. 최근 Python UDF나 원격 함수를 지원하지만, Spark처럼 수십 테라바이트의 이미지, 오디오, 비정형 로그 파일을 Python/Scala 코드로 세밀하게 제어하거나 복잡한 머신러닝 파이프라인을 단일 코드로 짜서 돌리는 범용성에서는 Spark를 대체할 수 없다.
 
@@ -755,16 +755,16 @@ flowchart TD
 | 기본 데이터 단위 | 계층형 문서 (`BSON` 통째 저장) | 행 단위 이진 포맷 (`UnsafeRow`) | 불변 컬럼 파일 (`Micro-partition`) | 물리 정렬 컬럼 블록 (`MergeTree`) | 중첩 지원 컬럼 블록 (`Capacitor`) |
 | 인메모리 연산 방식 | B-Tree 탐색 및 문서 단위 조작 | Row 루프 (Photon/Gluten 시 SIMD) | C++ Columnar Vectorized (SIMD) | C++ Columnar Vectorized (SIMD) | C++ Columnar Vectorized (SIMD) |
 | 조인 및 Shuffle | 소량 `$lookup` (대규모 Shuffle 불가) | 로컬 디스크 `.data/.index` 체크포인트 | 인메모리 스트리밍 (부족 시 S3 Spill) | 인메모리 해시 조인 (대규모 시 OOM 위험) | 독립된 전용 인메모리 Shuffle 클러스터 |
-| 가장 빠른 작업 | 특정 ID 1건의 복합 객체 즉시 조회/수정 | 수십 TB 비정형 정제 및 다단계 대규모 조인 | 복잡한 다중 테이블 조인 및 전사 BI 분석 | 단일/소수 넓은 테이블 초고속 실시간 집계 | 관리 없는 페타바이트급 Ad-hoc 및 중첩 JSON 분석 |
+| 가장 빠른 작업 | 특정 ID 1건의 복합 객체 즉시 조회/수정 | 수십 TB 비정형 정제 및 멀티 레이어 대규모 조인 | 복잡한 다중 테이블 조인 및 전사 BI 분석 | 단일/소수 넓은 테이블 초고속 실시간 집계 | 관리 없는 페타바이트급 Ad-hoc 및 중첩 JSON 분석 |
 | 가장 취약한 작업 | 전체 문서를 다 읽어야 하는 컬럼 통계 | 0.1초 내 응답해야 하는 짧은 단건 조회 | 비정형 코드 제어 및 초단기 포인트 조회 | 무거운 다중 테이블 조인 및 빈번한 단건 수정 | 0.1초 이하 초저지연 응답 및 잘못된 풀 스캔 과금 |
 
-결국 각 엔진의 메모리 레이아웃과 디스크·Shuffle 구조가 곧 그 엔진이 가장 잘하는 역할을 결정한다. 현대 데이터 플랫폼이 하나의 만능 DB만 쓰지 않고 아래와 같이 파이프라인을 구성하는 이유가 바로 여기에 있다.
+결국 각 엔진의 메모리 레이아웃과 디스크 저장구조, Shuffle 처리 과정이 곧 그 엔진이 가장 잘하는 역할을 결정한다. 현대 데이터 플랫폼이 하나의 만능 DB만 쓰지 않고 아래와 같이 업무 성격에 따라 파이프라인을 구성하는 이유가 바로 여기에 있다.
 
 1. 실시간 서비스 계층 (`MongoDB` / `RDBMS`):
    고객이 앱에서 상품을 조회하고 장바구니에 담아 주문하는 실시간 트랜잭션은 무조인 단건 조회(`BSON`)와 스키마 유연성이 뛰어난 MongoDB나 RDBMS가 1-5ms 내에 처리한다.
 2. 스토리지 및 테이블 포맷 계층 (`Parquet` + `Apache Iceberg` / `Delta Lake`):
    운영 DB에서 발생한 데이터 변경 내역(CDC)을 추출해 S3의 컬럼형 파일(Parquet)로 쌓고, 그 위에 파일별 통계 목차(Manifest)와 트랜잭션 기능을 제공하는 Iceberg나 Delta Lake 계층을 얹는다.
 3. 대규모 정제 및 배치 조인 계층 (`Apache Spark` + `Photon` / `Gluten`):
-   수십 테라바이트의 원본 로그와 여러 도메인 테이블을 묶는 무거운 다단계 조인·집계·머신러닝 전처리는, 로컬 디스크 Shuffle 파일 체크포인트(`.data`/`.index`)를 통해 노드 장애나 메모리 한계에도 끝까지 배치를 완주해 내는 Spark가 담당한다.
+   수십 테라바이트의 원본 로그와 여러 도메인 테이블을 묶는 무거운 멀티 레이어 조인, 집계, 배치, 머신러닝 전처리는 로컬 디스크 Shuffle 파일 체크포인트(`.data`/`.index`)를 통해 노드 장애나 메모리 한계에도 끝까지 완주해 내는 Spark가 담당한다.
 4. 고속 분석 및 서빙 계층 (`Snowflake` / `BigQuery` / `ClickHouse`):
-   정제된 마트 테이블을 바탕으로, 복잡한 다중 테이블 전사 BI 분석은 Snowflake가, 서버 관리 없는 페타바이트급 중첩 JSON·Ad-hoc 분석은 BigQuery가, 대고객 실시간 통계 대시보드와 로그 집계는 C++ SIMD와 로컬 SSD Sparse Index를 극대화한 ClickHouse가 각자의 강점 영역을 맡아 응답한다.
+   정제된 마트 데이터를 바탕으로 복잡한 다중 테이블 전사 BI 분석은 Snowflake가 서버 관리 없는 페타바이트급 중첩 JSON, Ad-hoc 분석은 BigQuery가 대고객 실시간 통계 대시보드와 로그 집계는 C++ SIMD와 로컬 SSD Sparse Index를 극대화한 ClickHouse가 각자의 강점 영역을 맡는다.
