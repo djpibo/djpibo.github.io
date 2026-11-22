@@ -6,9 +6,9 @@ sidebar_position: 1
 date: "2026년 8월 23일"
 reading_time: "약 5분"
 ---
-기술 블로그(Docusaurus)의 CI/CD 환경을 GitHub Actions로 구축한 후, 배포 파이프라인의 소요 시간이 평균 1분 10초(70초) 대에 머무르는 것을 확인했다. 
+기술 블로그(Docusaurus)의 CI/CD 환경을 GitHub Actions로 구축하고 배포 파이프라인의 소요 시간이 평균 70초 정도 소요되는 것을 확인했다.
 
-정적 페이지 빌드 과정에서 발생하는 리소스 소모 원인을 파악하기 위해 빌드 로그를 분석하고, 단계별로 병목 구간을 제거해 나간 최적화 과정을 정리한다.
+정적 페이지 빌드 과정에서 발생하는 리소스 소모 원인을 파악하기 위해 빌드 로그를 분석하고 단계별로 병목 구간을 제거해 나간 최적화 과정을 정리했다.
 
 
 ---
@@ -124,23 +124,7 @@ jobs:
 
 ---
 
-## 성과 지표 요약
-
-3단계 튜닝을 통해 개선된 최종 CI/CD 파이프라인의 성능 지표는 다음과 같다.
-
-| 튜닝 단계 | 구간별 소요 시간 | 총 빌드 시간 | 주요 적용 기술 |
-| :--- | :--- | :--- | :--- |
-| **초기 상태** | Install (35s) + Build (30s) + Infra (5s) | **70초** | npm + Webpack |
-| **Phase 1** | Install (14s) + Build (30s) + Infra (5s) | **49초** | Yarn v4 (Zero-install) |
-| **Phase 2** | Install (14s) + Build (12s) + Infra (5s) | **31초** | Rspack & SWC (Rust) 엔진 전환 |
-| **Phase 3** | Install (14s) + Build (4s) + Infra (2s) | **20초** | V8 메모리 튜닝 & 빌드 캐시 적용 |
-
-단계별 병목 제거를 통해 **총 빌드 시간을 70초에서 20초로 약 71% 단축**했으며, 변경 사항이 프로덕션 환경에 반영되는 지연 시간을 안정적으로 줄였다.
-
-
----
-
-### 4단계(후속 점검): 캐시 키 함정(`${{ github.sha }}`) 제거 및 중복 설치 생략
+### 4단계: 캐시 키 함정(`${{ github.sha }}`) 제거 및 중복 설치 생략
 
 운영을 이어가며 최신 GitHub Actions 실행 로그(총 50초: `build` Job 31초 + Job 전환 대기 9초 + `deploy` Job 10초)를 단계별로 프로파일링한 결과, 컴퓨팅 파워가 아닌 캐시 키 설계에서 불필요한 13초가 매 커밋마다 낭비되고 있음을 확인했다.
 
@@ -190,3 +174,17 @@ sequenceDiagram
 - 캐시 키에서 `${{ github.sha }}`를 제거하고 `hashFiles('yarn.lock')`으로만 고정하여, 일반 포스팅 수정 시 불필요한 `node_modules` 재업로드를 차단했다.
 - `cache-hit == 'true'`인 경우 `yarn install`과 `corepack enable`을 건너뛰고 `./node_modules/.bin/docusaurus build`를 직접 호출하도록 변경해 `build` Job 내 13초 이상의 중복 구간을 제거했다.
 - 남은 시간 중 약 17-20초(Runner 스케줄링 및 Job 전환 대기 약 9초 + `upload-pages-artifact` 2초 + `deploy-pages` CDN 반영 7초)는 GitHub Pages 인프라 자체의 고정 비용이므로, 실제 사용자 제어 영역인 빌드 파이프라인은 최소 하한선에 도달했다.
+
+## 성과 지표 요약
+
+4단계 튜닝을 통해 개선된 최종 CI/CD 파이프라인의 성능 지표는 다음과 같다.
+
+| 튜닝 단계 | 구간별 소요 시간 | 총 빌드 시간 | 주요 적용 기술 |
+| :--- | :--- | :--- | :--- |
+| **초기 상태** | Install (35s) + Build (30s) + Infra (5s) | **70초** | npm + Webpack |
+| **Phase 1** | Install (14s) + Build (30s) + Infra (5s) | **49초** | Yarn v4 (Zero-install) |
+| **Phase 2** | Install (14s) + Build (12s) + Infra (5s) | **31초** | Rspack & SWC (Rust) 엔진 전환 |
+| **Phase 3** | Install (14s) + Build (4s) + Infra (2s) | **20초** | V8 메모리 튜닝 & 빌드 캐시 적용 |
+| **Phase 4** | Install (9s) + Build (2s) + Infra (2s) | **20초** | V8 메모리 튜닝 & 빌드 캐시 적용 |
+
+단계별 병목 제거를 통해 **총 빌드 시간을 70초에서 13초로 약 83% 단축**했으며, 변경 사항이 프로덕션 환경에 반영되는 지연 시간을 안정적으로 줄였다.
