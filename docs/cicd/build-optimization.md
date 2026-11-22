@@ -136,3 +136,57 @@ jobs:
 | **Phase 3** | Install (14s) + Build (4s) + Infra (2s) | **20초** | V8 메모리 튜닝 & 빌드 캐시 적용 |
 
 단계별 병목 제거를 통해 **총 빌드 시간을 70초에서 20초로 약 71% 단축**했으며, 변경 사항이 프로덕션 환경에 반영되는 지연 시간을 안정적으로 줄였다.
+
+
+---
+
+### 4단계(후속 점검): 캐시 키 함정(`${{ github.sha }}`) 제거 및 중복 설치 생략
+
+운영을 이어가며 최신 GitHub Actions 실행 로그(총 50초: `build` Job 31초 + Job 전환 대기 9초 + `deploy` Job 10초)를 단계별로 프로파일링한 결과, 컴퓨팅 파워가 아닌 캐시 키 설계에서 불필요한 13초가 매 커밋마다 낭비되고 있음을 확인했다.
+
+- 실제 `Build Docusaurus` 연산 시간: 7.0초 (Rspack + SWC 정상 가동)
+- 병목 1 (`Post Cache` 4.0초): 캐시 키 끝에 `${{ github.sha }}`가 포함되어 있어, `yarn.lock`이 바뀌지 않은 단순 마크다운 수정에서도 매 커밋마다 Exact Cache Miss가 발생하고 `node_modules` 전체를 다시 압축·업로드했다.
+- 병목 2 (`Install dependencies` 9.0초): 이미 캐시에서 `node_modules`를 복원해 놓고도, 조건 분기 없이 매번 `corepack enable && yarn install --immutable`을 재실행했다.
+
+```mermaid
+sequenceDiagram
+    participant GH as GitHub Actions Runner
+    participant Cache as actions/cache (yarn.lock 기준)
+    participant Build as Rspack / Docusaurus Build
+
+    GH->>Cache: node_modules 캐시 조회 (key: hashFiles('yarn.lock'))
+    alt Cache Hit (일반 문서 수정 시)
+        Cache-->>GH: node_modules 즉시 복원 (재업로드 생략)
+        Note over GH: yarn install 및 corepack enable 단계 완전 스킵 (-9s)
+        GH->>Build: ./node_modules/.bin/docusaurus build 직접 실행 (약 7s)
+    else Cache Miss (yarn.lock 변경 시에만)
+        GH->>GH: corepack enable && yarn install --immutable 실행
+        GH->>Build: ./node_modules/.bin/docusaurus build 실행
+        GH->>Cache: 변경된 node_modules 1회 저장
+    end
+```
+<p align="center"><em>Figure 1: yarn.lock 해시 기반 캐시 분기를 통한 중복 의존성 설치 및 캐시 재업로드 제거 흐름</em></p>
+
+적용 코드: `.github/workflows/deploy.yml`
+
+```yaml title=".github/workflows/deploy.yml"
+      - name: Cache node_modules
+        id: deps-cache
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules-${{ hashFiles('yarn.lock') }}
+
+      - name: Install dependencies (on lockfile change)
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: |
+          corepack enable
+          yarn install --immutable
+
+      - name: Build Docusaurus
+        run: ./node_modules/.bin/docusaurus build
+```
+
+- 캐시 키에서 `${{ github.sha }}`를 제거하고 `hashFiles('yarn.lock')`으로만 고정하여, 일반 포스팅 수정 시 불필요한 `node_modules` 재업로드를 차단했다.
+- `cache-hit == 'true'`인 경우 `yarn install`과 `corepack enable`을 건너뛰고 `./node_modules/.bin/docusaurus build`를 직접 호출하도록 변경해 `build` Job 내 13초 이상의 중복 구간을 제거했다.
+- 남은 시간 중 약 17-20초(Runner 스케줄링 및 Job 전환 대기 약 9초 + `upload-pages-artifact` 2초 + `deploy-pages` CDN 반영 7초)는 GitHub Pages 인프라 자체의 고정 비용이므로, 실제 사용자 제어 영역인 빌드 파이프라인은 최소 하한선에 도달했다.
