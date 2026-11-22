@@ -365,7 +365,7 @@ sequenceDiagram
 
 ---
 
-### 3.2 디스크 저장 구조와 Data Skipping(Pruning) 메커니즘 비교
+### 3.2 Spark(/w Iceberg/Delta), Snowflake, ClickHouse의 디스크 저장 구조와 Data Skipping(Pruning) 메커니즘 비교
 
 세 엔진이 디스크(또는 오브젝트 스토리지)에 데이터를 실제로 어떻게 저장하고, 조건절(`WHERE`) 조회 시 불필요한 디스크 블록을 어떻게 건너뛰는지(Data Skipping)를 비교하면 아래 그림과 같다.
 
@@ -394,12 +394,12 @@ sequenceDiagram
 1. Spark + Apache Iceberg / Delta Lake (Manifest File-level Pruning):
    - 저장 방식: S3 같은 오브젝트 스토리지에 128MB-1GB 크기의 Parquet 파일들을 저장하고, 별도의 메타데이터 파일(`Manifest File` 또는 `_delta_log`)에 각 Parquet 파일의 컬럼별 `Min/Max` 통계를 기록한다.
    - 탐색 과정: 쿼리가 들어오면 먼저 Manifest 파일을 읽어 조건에 해당하지 않는 Parquet 파일들을 통째로 제외(1차 파일 Pruning)하고, 선택된 Parquet 파일 안에서도 하단 `Footer`를 읽어 조건에 맞는 `Row Group`과 `Column Chunk`만 디스크에서 읽어 들인다.
-2. Snowflake (Cloud Services 전역 메타데이터 + Micro-partition):
-   - 저장 방식: 데이터를 적재할 때 압축 전 기준 50-500MB 크기의 작은 불변 컬럼 파일인 `Micro-partition`으로 자동 분할해 S3에 저장한다. 이때 파일 내부에 통계를 두는 것이 아니라, 컴퓨팅 노드 바깥의 독립된 중앙 데이터베이스(`FoundationDB` 기반 Cloud Services 계층)에 모든 Micro-partition의 컬럼별 `Min/Max`, `Distinct Count`, `Null` 여부를 전부 추출해 저장해 둔다.
-   - 탐색 과정: 워커 노드가 S3에 접근하기도 전에, 쿼리 컴파일 단계에서 중앙 메타데이터 DB만 조회하여 수만 개의 Micro-partition 중 실제로 읽어야 할 파일 목록을 수 밀리초(ms) 내에 확정한다.
+2. Snowflake (Cloud Services 전역 메타데이터 `FoundationDB` + Micro-partition):
+   - 저장 방식: 데이터를 적재할 때 압축 전 기준 50-500MB 크기의 작은 불변 컬럼 파일인 `Micro-partition`으로 자동 분할해 S3에 저장한다. 이때 파일 내부에 통계를 두는 것이 아니라, 컴퓨팅 노드 바깥의 독립된 중앙 데이터베이스(`FoundationDB`)를 Cloud Services 계층 배치한 후, 모든 Micro-partition의 컬럼별 `Min/Max`, `Distinct Count`, `Nullable`를 전부 추출해 저장한다.
+   - 탐색 과정: 워커 노드가 S3에 접근하기 전에 쿼리 컴파일 단계에서 중앙 메타데이터 DB만 조회하여 수만 개의 Micro-partition 중 실제로 읽어야 할 파일 목록을 수 밀리초(ms) 내에 찾아낸다.
 3. ClickHouse (`MergeTree` 물리 정렬 스토리지 + RAM Sparse Primary Index):
-   - 저장 방식: 느린 원격 오브젝트 스토리지 대신 워커 노드의 로컬 NVMe SSD에 데이터를 직접 저장한다. 테이블 생성 시 지정한 `ORDER BY` 키를 기준으로 실제 디스크상의 데이터를 물리적으로 완벽히 정렬해서 기록(`data.bin`)하며, 기본 8,192개 행 묶음(Granule)마다 첫 번째 행의 키 값 하나씩만 뽑아 만든 희소 인덱스(`primary.idx`, Sparse Index)를 생성한다.
-   - 탐색 과정: 8,192행마다 대표 값 1개만 인덱스에 넣기 때문에 테이블이 수십억 건이어도 인덱스 크기는 수 메가바이트에 불과해 항상 RAM에 100% 상주한다. 조회 조건이 들어오면 RAM의 Sparse Index에서 이진 탐색(Binary Search)으로 목표 Granule의 디스크 위치(Offset)를 찾아낸 뒤, 로컬 SSD의 해당 위치로 즉시 점프(Seek)해 필요한 8,192행 블록만 읽어낸다.
+   - 저장 방식: 느린 원격 오브젝트 스토리지 대신 워커 노드의 로컬 NVMe SSD에 데이터를 직접 저장한다. 테이블 생성 시 지정한 `ORDER BY` 키를 기준으로 실제 디스크상의 데이터를 물리적으로 정렬해서 기록(`data.bin`)하며, 기본 8,192개 행 묶음(Granule)마다 첫 번째 행의 키 값 하나씩만 뽑아 만든 희소 인덱스(`primary.idx`, Sparse Index)를 생성한다.
+   - 탐색 과정: 8,192행마다 대표 값 1개만 인덱스에 넣기 때문에 테이블이 수십억 건이어도 인덱스 크기는 MB 단위로 줄어들기 때문에 메모리(RAM) 선에서 연산이 가능하다. 조회 조건이 들어오면 RAM의 Sparse Index에서 이진 탐색(Binary Search)으로 목표 Granule의 디스크 위치(Offset)를 찾아낸 후, 로컬 SSD의 해당 위치로 점프(Seek)해 필요한 8,192행 블록만 읽어낸다.
 
 ---
 
@@ -433,15 +433,14 @@ sequenceDiagram
    - `shuffle_0_0_0.data` (실제 데이터 파일): 다음 단계의 몇 번 서버(Task)로 갈지 목적지 번호(`Partition ID`)별로 분류된 실제 데이터(`UnsafeRow` 바이트 덩어리)들을 하나의 파일에 순서대로 이어서 기록한다.
    - `shuffle_0_0_0.index` (위치 목차 파일): 각 목적지 번호(`Partition ID`)의 데이터가 `.data` 파일의 몇 바이트 위치(Offset)부터 시작해서 어디서 끝나는지 적어둔 목차 파일이다(예: "0번 파티션은 0-1024바이트, 1번 파티션은 1024-4096바이트").
 
-2. 장애 복구 비교 — 1시간짜리 배치의 55분째에 서버 1대가 죽었을 때:
+2. 장애 복구에 걸리는 시간 비교 — 1시간짜리 배치의 55분째에 서버 1대가 죽었을 때:
    - 세이브 파일이 없는 경우 (Snowflake, ClickHouse, MongoDB `$lookup`):
-     응답 속도를 높이기 위해 디스크에 중간 파일을 남기지 않고 네트워크 소켓으로 다음 노드의 메모리에 바로 쏘는 방식을 쓴다. 만약 100대의 서버가 3단계 조인을 55분간 수행하다가 마지막 단계에서 서버 1대가 죽으면, 그 서버가 받던 중간 데이터가 디스크 어디에도 남아있지 않다. 결국 죽은 서버의 데이터를 다시 만들려면 이미 끝난 앞 단계들까지 거슬러 올라가 100대 서버 전체가 0분부터 쿼리 전체를 다시 실행해야 한다.
+     응답 속도를 높이기 위해 디스크에 중간 파일을 남기지 않고 네트워크 소켓 통신으로 다음 노드의 메모리에 바로 전달하는 방식을 쓴다. 만약 100대의 서버가 3단계 조인을 55분간 수행하다가 마지막 단계에서 서버 1대가 죽으면, 그 서버가 받던 중간 데이터가 디스크 어디에도 남아있지 않다. 결국 죽은 서버의 데이터를 다시 만들려면 이미 끝난 앞 단계들까지 거슬러 올라가 100대 서버 전체가 0분부터 쿼리 전체를 다시 실행해야 한다.
    - 세이브 파일이 있는 경우 (Apache Spark):
      Spark에서는 55분째에 3번 서버가 죽더라도 앞선 단계들을 다시 계산하지 않는다. 직전 Stage가 끝날 때 모든 서버의 로컬 디스크에 `.data`와 `.index` 파일이 고스란히 세이브되어 있기 때문이다. Spark는 살아 있는 다른 서버 하나에게 "직전 Stage 디스크 파일들의 `.index` 목차를 보고 3번 파티션 위치만 다시 읽어서, 죽은 3번 Task 하나만 재실행해라"라고 지시한다. 나머지 99대의 서버가 한 일은 그대로 보존된 채 몇 분 만에 복구가 끝난다.
 
 3. 메모리 한계 극복 (Out-of-Core 처리):
-   서버 메모리가 64GB인데 조인해야 할 중간 데이터가 200GB로 불어나는 상황에서도 차이가 난다. 인메모리 처리에 의존하는 DB들은 이때 `OutOfMemory(OOM)` 에러를 뱉고 멈추지만, Spark는 200GB든 10TB든 로컬 디스크의 Shuffle 파일로 나누어 기록하고 디스크에 정렬된 파일을 조금씩 스트리밍으로 읽어 병합(`Sort-Merge Join`)하므로 메모리보다 훨씬 큰 데이터도 죽지 않고 처리한다.
-
+   서버 메모리가 64GB인데 조인해야 할 중간 데이터가 200GB로 불어나는 상황에서도 차이가 난다. 인메모리 처리에 의존하는 DB들은 이때 `OutOfMemory(OOM)` 에러를 뱉고 멈추지만, Spark는 200GB든 10TB든 로컬 디스크의 Shuffle 파일로 나누어 기록하고 디스크에 정렬된 파일을 조금씩 스트리밍으로 읽어 병합(`Sort-Merge Join`)하므로 메모리보다 훨씬 큰 데이터도 처리가 가능하다.
 ---
 
 ## 4. Columnar Vectorized 실행 엔진과 하드웨어 SIMD 내부 원리
@@ -484,7 +483,7 @@ flowchart LR
 - Row Layout의 Cache Pollution:
   한 행이 `order_id(8B)`, `item_name(32B)`, `price(8B)`, `order_date(16B)`로 구성된 64바이트 레코드라고 가정한다. `SELECT SUM(price) FROM sales` 쿼리를 수행할 때, Row 기반 메모리 구조에서는 `price` 8바이트 하나를 읽기 위해 나머지 56바이트의 불필요한 컬럼 데이터까지 L1 캐시로 함께 끌고 들어온다. 결국 메모리 대역폭과 CPU L1 캐시 공간의 87.5%(56/64)가 쓰이지도 않는 데이터로 채워지는 Cache Pollution이 발생한다.
 - Columnar Layout의 100% 밀도:
-  컬럼형 메모리 구조에서는 `price` 값만 메모리 주소상에 연속된 배열로 배치된다. CPU가 64바이트 Cache Line 하나를 읽으면 4바이트 정수(`int32`) 기준 16개의 `price` 값이 빈틈없이 L1 캐시에 적재되며, Hardware Prefetcher가 다음 배열 주소를 정확히 예측해 메모리 지연(Memory Stall)을 숨겨준다.
+  컬럼형 메모리 구조에서는 `price` 값만 메모리 주소상에 연속된 배열로 배치된다. CPU가 64바이트 Cache Line 하나를 읽으면 4바이트 정수(`int32`) 기준 16개의 `price` 값이 빈틈없이 L1 캐시에 적재되며 Hardware Prefetcher가 다음 배열 주소를 정확히 예측해 무의미한 메모리 대기(Memory Stall)를 줄여준다.
 
 ### 4.3 왜 전체 컬럼이 아니라 1,024-4,096개 단위의 Vector Batch인가?
 
@@ -526,24 +525,27 @@ for (int i = 0; i < 4096; i += 16) {
 ```
 
 #### (2) Branchless Execution과 Selection Vector
-CPU는 명령어 처리 속도를 높이기 위해 15-20단계의 파이프라인을 미리 채워 실행하며, `if` 조건문을 만나면 결과가 나오기 전에 어느 쪽으로 갈지 미리 추측하는 Branch Prediction(분기 예측)을 수행한다.
-만약 `WHERE price > 50000` 조건의 참/거짓 비율이 50%에 가까워 무작위로 섞여 있다면, CPU의 분기 예측이 계속 빗나가면서 미리 실행해 둔 파이프라인을 전부 비우고 다시 시작하는 Branch Misprediction Penalty(1회당 15-20 클럭 손실)가 발생한다.
+CPU는 명령어 처리 속도를 높이기 위해 15-20단계의 파이프라인을 미리 채워 실행하며, `if` 조건문을 만나면 결과가 나오기 전에 어느 쪽으로 갈지 미리 추측하는 Branch Prediction을 수행한다.
+만약 `WHERE price > 50000` 조건의 참/거짓 비율이 50%에 가까워 무작위로 섞여 있다면, CPU의 분기 예측이 계속 빗나가면서 미리 실행해 둔 파이프라인을 전부 비우고 다시 시작하는 Branch Misprediction Penalty(15-20 clock loss per execution)가 발생한다.
 
-ClickHouse나 Snowflake의 Vectorized 엔진은 위 코드 예시처럼 `if` 문을 쓰지 않는다. 대신 SIMD 비교 명령어를 통해 조건을 만족하는 위치만 `1`로 표시한 Bitmask나 통과한 행의 인덱스 번호만 모아둔 Selection Vector(예: `[1, 3, 4, 7]`) 배열을 생성한다. 분기 자체가 사라지므로 CPU 파이프라인이 단 한 번도 멈추지 않고 최고 클럭 속도로 배열을 밀어낸다.
+ClickHouse나 Snowflake의 Vectorized 엔진은 위 코드 예시처럼 `if` 문을 쓰지 않는다. 대신 SIMD 비교 명령어를 통해 조건을 만족하는 위치만 `1`로 표시한 Bitmask나 통과한 행의 인덱스 번호만 모아둔 Selection Vector(예: `[1, 3, 4, 7]`) 배열을 미리 생성해둔다. 매번 분기 처리를 할 필요가 사라지므로 CPU 파이프라인이 단 한 번도 멈추지 않는 효율적인 연산을 수행할 수 있다.
 
 #### (3) 왜 기본 JVM 엔진보다 C++ Native 엔진(Photon, Gluten/Velox)이 훨씬 빠른가?
 단순히 언어를 Java에서 C++로 바꾸었기 때문이 아니다. JVM이라는 가상 머신이 안전을 위해 강제하는 물리적 제약들을 C++ 네이티브 수준에서 걷어내고, 100% 순수 Off-Heap 메모리 위에서 하드웨어를 직접 통제하기 때문이다.
 
 1. 앞단(Scan -> Filter -> Project)에서 `ColumnarToRow` 변환 완전 제거:
-   쿼리에서 데이터가 가장 많은 구간은 파일을 막 읽어들인 직후다. 기본 JVM Spark는 Parquet에서 1억 건을 읽자마자 무조건 가로 행(`UnsafeRow`) 1억 개로 재조립한 뒤 `WHERE` 조건을 검사한다. 반면 Photon과 Velox는 세로 배열 상태 그대로 SIMD 필터링을 먼저 끝내버리고, 살아남은 소수의 데이터만 다음 단계로 넘긴다.
+   쿼리에서 데이터가 가장 많은 구간은 파일을 막 읽어들인 직후다. 기본 JVM Spark는 Parquet에서 1억 건을 읽자마자 무조건 가로 행(`UnsafeRow`) 1억 개로 재조립한 뒤 `WHERE` 조건을 검사한다. 반면 Photon과 Velox는 세로 배열 상태 그대로 SIMD 필터링을 수행한 후 소수의 데이터만 다음 단계로 넘긴다.
 2. JVM의 안전장치(Bounds Check, SafePoint) 제거와 SIMD 강제 실행:
-   JVM JIT Compiler(C2)도 단순 루프를 SIMD로 바꿔주는 Auto-Vectorization 기능이 있다. 하지만 JVM은 메모리 침범을 막기 위해 루프마다 배열 인덱스 경계 검사(Array Bounds Check)와 GC를 위한 SafePoint 폴링 코드를 강제로 끼워 넣는다. 여기에 `NULL` 체크 분기까지 섞이면 JIT 컴파일러는 패턴 인식을 포기하고 1번에 1개씩만 계산하는 일반 스칼라 명령어로 컴파일한다. 반면 C++ 엔진은 `_mm512_add_epi32` 같은 CPU 하드웨어 SIMD 명령어(Intrinsics)를 코드에서 직접 호출하여 항상 1클럭에 16개씩 강제로 묶어서 처리한다.
+   JVM JIT Compiler(C2)도 단순 루프를 SIMD로 바꿔주는 Auto-Vectorization 기능이 있다. 하지만 JVM은 메모리 침범을 막기 위해 루프마다 배열 인덱스 경계 검사와 GC를 위한 SafePoint 폴링 코드를 강제로 끼워 넣는다. 여기에 `NULL` 체크 분기까지 섞이면 JIT 컴파일러는 패턴 인식을 포기하고 1번에 1개씩만 계산하는 일반 스칼라 명령어로 컴파일한다. 반면 C++ 엔진은 `_mm512_add_epi32` 같은 CPU 하드웨어 SIMD 명령어를 코드에서 직접 호출하여 항상 1클럭에 16개씩 강제로 묶어서 처리한다.
 3. 런타임 코드 생성(Whole-Stage CodeGen) 및 JIT 워밍업 지연 제거:
-   기본 Spark는 쿼리가 들어올 때마다 수천 줄의 Java 소스 코드를 즉석에서 문자열로 조립해 컴파일(Janino)하고, 생성된 함수가 너무 길어지면(JVM의 64KB 바이트코드 제한 초과) 최적화가 아예 풀려버린다. 반면 Photon과 Velox는 이미 C++ 컴파일러(`-O3`)로 최고 수준으로 번역해 둔 벡터 연산 함수(Pre-compiled Vectorized Kernels)들을 조합해 워밍업 없이 첫 블록부터 최고 속도로 실행한다.
-4. 100% 순수 Off-Heap(Native Memory) 사용과 Zero-Copy, 64-Byte 메모리 정렬:
-   - 진정한 100% Off-Heap 동작: 기본 Spark는 `Tungsten`을 써도 연산을 돌리는 주체가 JVM이라 실행 도중 수많은 제어용 객체가 On-Heap에 생성된다(심지어 기본 설정인 `offHeap.enabled=false`에서는 `UnsafeRow`조차 On-Heap의 `byte[]` 배열 안에 만들어진다). 반면 Photon과 Gluten(Velox)은 파일 읽기부터 컬럼 배열, 조인 해시 테이블, Shuffle 버퍼까지 전 과정을 C++ 전용 메모리 풀(Arena Allocator)을 통해 100% OS Native Memory(Off-Heap)에서만 만들고 바로 해제한다. JVM GC가 스캔할 객체 자체가 아예 생기지 않는다.
-   - Zero-Copy 연동: Spark(JVM)가 작업을 지시하고 Velox(C++)가 연산할 때도 데이터를 복사해서 주고받지 않는다. Off-Heap에 표준화된 컬럼 메모리 규격(Apache Arrow 포맷)으로 올려두고 메모리 시작 주소(포인터 숫자 하나)만 넘겨주므로 복사 비용이 0(Zero-Copy)이다.
-   - 64-Byte Alignment 고정과 CPU Prefetch 제어: JVM On-Heap에서는 GC가 청소 도중 객체 위치를 마음대로 옮겨버리므로(Compaction) 메모리 주소가 64바이트 단위로 맞아떨어지지 않는다. 반면 C++ Off-Heap은 GC가 건드리지 못하므로 처음부터 메모리 주소를 CPU 캐시 라인 크기인 64바이트 배수(`alignas(64)`)에 칼같이 고정해 SIMD 속도를 극대화한다. 나아가 해시 테이블을 뒤질 때도 CPU에게 "10번째 뒤에 처리할 메모리 주소를 지금 미리 RAM에서 L1 캐시로 퍼 올려놔라"라는 하드웨어 프리페치 명령어(`__builtin_prefetch`)를 직접 내려 CPU 대기 시간(Memory Stall)을 지워버린다.
+   기본 Spark는 쿼리가 들어올 때마다 수천 줄의 Java 소스 코드를 즉석에서 문자열로 조립해 컴파일하고 생성된 함수가 너무 길어지면(JVM의 64KB 바이트코드 제한 초과) 최적화가 아예 풀려버린다. 반면 Photon과 Velox는 이미 C++ 컴파일러(`-O3`)로 최고 수준으로 번역해 둔 벡터 연산 함수(Pre-compiled Vectorized Kernels)들을 조합해 워밍업 없이 첫 블록부터 효율적으로 연산 실행이 가능하다.
+4. 100% Off-Heap(Native Memory) 사용 Zero-Copy, 64-Byte 메모리 정렬:
+   - 기본 Spark는 `Tungsten`을 써도 연산을 돌리는 주체가 JVM이라 실행 도중 수많은 `제어용 객체`가 On-Heap에 생성된다(심지어 기본 설정인 `offHeap.enabled=false`에서는 `UnsafeRow`조차 On-Heap의 `byte[]` 배열 안에 만들어진다). 반면 Photon과 Gluten(Velox)은 파일 읽기부터 컬럼 배열, 조인 해시 테이블, Shuffle 버퍼까지 전 과정을 C++ 전용 메모리 풀을 통해 100% OS Native Memory(Off-Heap)에서만 만들고 바로 해제한다. JVM GC가 스캔할 객체 자체가 아예 생기지 않는다.
+5. Zero-Copy 연동
+   - Spark(JVM)가 작업을 지시하고 Velox(C++)가 연산할 때도 데이터를 복사해서 주고받지 않는다. Off-Heap에 표준화된 컬럼 메모리 규격으로 올려두고 메모리 시작 주소(포인터 숫자 하나)만 넘겨주기 때문에 메모리 복사 비용이 발생하지 않는다.
+6. 64-Byte Alignment 고정과 CPU Prefetch 제어
+   - JVM On-Heap에서는 GC 수행중 객체 위치를 임의로 옮기는 Compaction 연산이 수행되는데 메모리 주소가 64바이트 단위로 맞아떨어지지 않는 경우가 발생한다. 반면 C++ Off-Heap은 GC가 건드리지 못하므로 처음부터 메모리 주소를 CPU 캐시 라인 크기인 64바이트 배수(`alignas(64)`)로 고정시켜 SIMD 속도가 보장된다. 
+   - 또한, 해시 테이블 탐색시에도 CPU에게 "10번째 뒤에 처리할 메모리 주소를 지금 미리 RAM에서 L1 캐시로 미리 저장하라"는 Hardware Prefetch 명령어(`__builtin_prefetch`)가 수행되어 Memory Stall에 의한 CPU 대기 시간이 발생하지 않게 된다.
 
 ---
 
@@ -579,12 +581,12 @@ flowchart LR
 1. Shuffle, Hash Join, Sort 구간에서 발생하는 행 재조립(Gather) 병목:
    - 단순 필터링(`WHERE price > 50000`)이나 단일 컬럼 합계(`SUM(price)`)는 `price` 배열 하나만 쭉 훑으면 되므로 Columnar가 압도적으로 빠르다.
    - 하지만 네트워크 Shuffle이나 Hash Join 단계로 넘어가면 상황이 정반대가 된다. 네트워크로 데이터를 보낼 때는 "1번 서버로는 3번 행, 2번 서버로는 4번 행"처럼 행(Row) 단위로 묶어서 보내야 한다.
-   - 만약 20개 컬럼을 가진 테이블이 메모리에 20개의 세로 배열로 흩어져 있다면, 조건에 통과한 `3번 행` 하나를 패킷으로 묶기 위해 서로 멀리 떨어진 20개의 컬럼 배열 주소(`0x10000`, `0x50000`, ..., `0xF0000`)를 일일이 찾아다니며 값을 하나씩 뽑아와야(Gather / Tuple Reconstruction) 한다.
-   - 컬럼 개수가 많은 테이블(Wide Table)일수록 이 과정에서 메모리 20군데를 랜덤하게 찔러대느라 CPU L1/L2 Cache Miss가 폭증한다. 반면 Spark의 `UnsafeRow`는 한 행의 20개 컬럼이 이미 한 덩어리로 붙어 있으므로 그 메모리 블록 하나만 통째로 복사(`memcpy`)하면 끝난다.
-2. 필터링 이후 배열 중간에 생기는 구멍(희소성)과 가변 길이 데이터 관리 비용:
+   - 만약 20개 컬럼을 가진 테이블이 메모리에 20개의 세로 배열로 흩어져 있다면, 조건에 통과한 `3번 행` 하나를 패킷으로 묶기 위해 서로 멀리 떨어진 20개의 컬럼 배열 주소(`0x10000`, `0x50000`, ..., `0xF0000`)를 일일이 찾아다니며 값을 하나씩 찾게되는 `Gather / Tuple Reconstruction` 문제가 발생한다.
+   - 컬럼 개수가 많은 테이블(Wide Table)일수록 이 과정에서 메모리 20군데를 랜덤하게 액세스하는 과정에서 CPU L1/L2 Cache Miss가 폭증한다. 반면 Spark의 `UnsafeRow`는 한 행의 20개 컬럼이 이미 한 덩어리로 붙어 있으므로 그 메모리 블록 하나만 통째로 복사(`memcpy`)하면 끝난다.
+2. 필터링 이후 배열 중간에 생기는 구멍과 가변 길이 데이터 관리 비용:
    - 1,000개의 배열 원소 중 `WHERE` 조건을 통과한 데이터가 딱 2개뿐이라면, Row 방식은 통과한 2개의 행만 넘기면 끝난다. 반면 Columnar 방식은 20개 컬럼 배열 전체에 대해 살아남은 인덱스 번호표(`Selection Vector`)를 계속 들고 다니거나, 살아남은 원소만 모아서 새 배열로 다시 복사(Compaction)해야 한다.
    - 또한 길이가 들쭉날쭉한 문자열(`String`)이나 중첩 구조(`Array`, `Map`, `JSON`)를 Columnar로 다룰 때는 `[Null 비트맵 배열] + [글자 시작 위치 Offset 배열] + [실제 글자 바이트 배열]`이라는 3중 배열 구조를 컬럼마다 유지하고 싱크를 맞춰야 하므로 메모리 관리가 훨씬 복잡하다.
-3. 결론 — 현대 엔진들의 해법(하이브리드 실행 파이프라인):
+3. 결론 -> 현대 엔진들의 해법(하이브리드 실행 파이프라인):
    결국 인메모리에서도 Row 방식과 Columnar 방식은 각자 잘하는 구간이 명확히 다르다.
    - Scan / Filter (`WHERE`) / 단일 컬럼 집계 (`SUM`, `AVG`): Columnar 압승 (캐시 밀도 100% + SIMD)
    - Hash Join / 다중 키 Group By / Sort / Shuffle 전송: Row (`UnsafeRow`) 유리 (한 덩어리 복사 및 비교)
