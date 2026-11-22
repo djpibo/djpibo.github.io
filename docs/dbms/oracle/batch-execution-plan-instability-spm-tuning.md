@@ -1,7 +1,7 @@
 ---
 id: batch-execution-plan-instability-spm-tuning
-title: "30분 주기 센터재고이동 배치의 실행 계획 왜곡 해결: Bind Peeking에서 SPM 긴급 처방, 그리고 쿼리 리팩토링까지"
-sidebar_label: 배치 플랜 왜곡과 SPM 튜닝
+title: "실행 플랜이 갑자기 변경된 경우? Bind Peeking에서 SPM 긴급 처리 그리고 쿼리 리팩토링까지"
+sidebar_label: SPM Tuning
 sidebar_position: 9
 date: "2026년 9월 15일"
 reading_time: "약 12분"
@@ -9,94 +9,86 @@ reading_time: "약 12분"
 
 # 30분 주기 센터재고이동 배치의 실행 계획 왜곡 해결: Bind Peeking에서 SPM 긴급 처방, 그리고 쿼리 리팩토링까지
 
-올리브영에서는 물류 센터 간에 재고에 대한 수급 불균형을 해소하기 위해 30분 주기로 '센터재고이동 배치'가 수행된다.
+내가 다니는 회사에서는 물류 센터 간에 재고에 대한 수급 불균형을 해소하기 위해 30분 주기로 '센터재고이동 배치'가 회차별로 수행된다.
 또한, 매장 발주의 균등한 분배를 수행하는 '수주배분 배치'가 매일 17시에 수행된다.
 
-평소 1~2분 내외로 원활히 종료되던 이 배치가 수주배분 배치 이후에 갑작스럽게 28분 이상 지연되며 다음 회차 배치와 중첩 실행(Overlap) 직전까지 치닫는 프로덕션 장애가 발생했다.
+평소 1~2분 내외로 원활히 종료되던 이 배치가 수주배분 배치 이후에 갑작스럽게 28분 이상 지연되며 다음 회차 배치와 겹치고 데이터가 밀리는 운영 장애가 발생했다.
 
 ```
 [ 센터재고이동 30분 주기 배치 모니터링 경보 ]
 - 평시 수행 시간 : 1분 15초 ~ 1분 40초 (Buffer Gets: 약 8,500)
-- 장애 회차 시간 : 28분 42초 (Buffer Gets: 15,280,000 돌파, 지연 Alert)
-- 다음 주기 배치 : 1분 18초 후 기동 예정 (배치 중첩 시 Lock 충돌 위험)
+- 장애 회차 시간 : 28분 42초 (Buffer Gets: 15,280,000 초과, 지연 알람 발생)
 ```
 
 원인은 소스 코드 변경이나 데이터베이스 설정 수정이 아닌, 데이터 분포도 편차(Skew) 환경에서 발생한 **Bind Peeking 기반 Execution Plan 왜곡**이었다.
 
-본 글에서는 Oracle CBO 환경에서 Execution Plan이 뒤집히는 물리적 메커니즘을 분석하고, 야간 무배포 상황에서 SPM(SQL Plan Management)으로 1분 40초 만에 정상 복구한 긴급 대응 절차, Outline Data를 통한 힌트 제어, 그리고 데이터 규모 격리를 통한 근본적인 쿼리 및 파이프라인 리팩토링 과정을 공유한다.
+이번 글에서는 Oracle CBO 환경에서 Execution Plan이 뒤집히는 물리적 메커니즘을 분석하고 긴급 소스 수정 배포 없이 SPM(SQL Plan Management)으로 1분 40초 만에 정상 복구한 긴급 대응 절차에 대해 소개한다. 또한, Outline Data를 통한 힌트 제어하는 방법과 그리고 데이터 분포도의 편차에 흔들리지 않도록 근본적인 쿼리 수정 방법과 배치 파이프라인 리팩토링 과정을 공유한다.
 
 ---
 
 ## 1. CBO 환경에서 Execution Plan이 변경되는 4가지 요인 (20%)
 
 비용 기반 옵티마이저(CBO, Cost-Based Optimizer)는 SQL이 요청한 데이터를 추출하기 위해 디스크 I/O와 CPU 비용을 종합 계산하여 가장 적은 비용이 소요되는 실행 경로를 선택한다.  
-동일한 텍스트의 SQL이라 하더라도 시스템 런타임 환경과 데이터 통계 변화에 따라 Execution Plan이 완전히 다른 형태로 뒤집힐 수 있다.
+동일한 텍스트의 SQL이라 하더라도 `시스템 런타임 환경`과 `데이터 통계 변화`에 따라 Execution Plan이 완전히 다른 형태로 뒤집힐 수 있다.
 
 ```mermaid
-flowchart LR
+sequenceDiagram
+    participant App as 배치 애플리케이션
+    participant Cache as Library Cache (Shared Pool)
+    participant CBO as Oracle CBO (Hard Parse)
+    participant Dict as 데이터 딕셔너리 (통계/히스토그램)
 
-    subgraph ClientLayer["배치 애플리케이션"]
-        APP["배치 워커 스레드"]
-    end
+    Note over Cache: [트리거 1] Cursor Invalidation (Aging / DDL / 통계 갱신) -> 기존 커서 무효화
 
-    subgraph SharedPool["Oracle Shared Pool / CBO"]
-        HP["Hard Parse 트리거"]
-        BP["Bind Peeking<br/>최초 바인드 값 평가"]
-        ACS["Adaptive Cursor Sharing<br/>Bind Sensitive / Aware"]
-        STAT["통계 정보 갱신<br/>(Stale / Dynamic Sampling)"]
-        INV["Cursor Invalidation<br/>(Aging / DDL)"]
-    end
+    App->>Cache: 1. SQL 실행 요청 (:bind_var = 소량 조건)
+    Cache-->>CBO: 2. 캐시 미스 -> Hard Parse 발생
 
-    subgraph StorageLayer["데이터 딕셔너리 및 SGA"]
-        DICT[("DBA_TAB_STATISTICS<br/>히스토그램")]
-        CACHE[("Library Cache<br/>Cursor Heap")]
-    end
+    Dict-->>CBO: 3. [트리거 2] Stale/갱신된 통계 및 히스토그램 참조
+    Note over CBO: 4. [트리거 3] Bind Peeking: 최초 바인드 값 기준 카디널리티 추정
+    CBO->>Cache: 5. 소량 기준 초기 플랜(NL Join) 등록
 
-    APP -->|"SQL 실행 요청 (:bind_var)"| HP
-    INV -->|"Shared Pool 캐시 무효화"| HP
-    STAT -->|"카디널리티 계산 왜곡"| HP
-    DICT -.->|"통계 참조"| STAT
-    HP -->|"바인드 값 검사"| BP
-    BP -->|"초기 플랜 생성"| CACHE
-    CACHE -.->|"실행 횟수/버킷 피드백"| ACS
+    App->>Cache: 6. 후속 실행 요청 (:bind_var = 대량 15만 건)
+    Cache-->>App: 7. Soft Parse로 기존 소량 플랜(NL Join) 그대로 재사용 -> 배치 지연!
+
+    Note over Cache,CBO: [트리거 4] ACS (Bind Sensitive -> Aware): 수차례 실행 피드백 누적 후 커서 분리
 ```
-<p align="center"><em>Figure 1: Oracle CBO 환경에서 Execution Plan 변경을 유발하는 4대 트리거와 상호작용</em></p>
+<p align="center"><em>Figure 1: Oracle CBO 환경에서 Execution Plan 변경 및 배치 지연을 유발하는 4대 트리거 시퀀스</em></p>
 
 ### 1.1. Bind Peeking의 양날의 검
 바인드 변수를 사용하는 SQL은 하드 파싱(Hard Parse) 부하를 줄이고 Shared Pool의 Library Cache를 재사용(Soft Parse)할 수 있게 해준다.  
-그러나 옵티마이저가 쿼리를 처음 파싱할 때 넘겨받은 바인드 변수 값을 몰래 훔쳐보고(Bind Peeking), 그 값에 맞추어 카디널리티(Cardinality)를 추정한 뒤 Execution Plan을 확정 짓는다.
+그러나 옵티마이저가 쿼리를 처음 파싱할 때 넘겨받은 바인드 변수 값을 확인하고(Bind Peeking), 그 값에 맞추어 카디널리티(Cardinality)를 추정한 뒤 Execution Plan을 확정 짓는다.
 
-- 만약 첫 번째 파싱 시점에 **매우 희소한 조건(예: 반환 행 10건)**의 값이 입력되면, 옵티마이저는 `Index Range Scan`과 `Nested Loop Join`이 최적이라고 판단한다.
+- 만약 첫 번째 파싱 시점에 **매우 소량인 조건(예: 반환 행 10건)**의 값이 입력되면, 옵티마이저는 `Index Range Scan`과 `Nested Loop Join`이 최적이라고 판단한다.
 - 이 플랜이 Library Cache에 등록되면, 이후 **대량 데이터(예: 반환 행 15만 건)**를 요구하는 바인드 값이 들어와도 기존에 캐싱된 플랜을 그대로 재사용(Soft Parse)하게 된다.
 
 ### 1.2. Adaptive Cursor Sharing (ACS)의 작동 방식과 한계
-Oracle 11g부터 도입된 ACS는 바인드 변수 값에 따라 데이터 편차가 심할 때 서로 다른 자식 커서(Child Cursor)를 동적으로 생성하여 대응하도록 설계되었다.
+Oracle 11g부터 도입된 ACS는 바인드 변수 값에 따라 데이터 편차가 심할 때 서로 다른 자식 커서(Child Cursor) 플랜을 동적으로 생성하여 대응하도록 설계되었다.
 1. **Bind Sensitive Cursor**: 컬럼에 히스토그램이 존재하고 바인드 변수 값에 따라 실행 비용 차이가 클 것으로 예상되면 커서를 `Bind Sensitive` 상태로 등록한다.
 2. **Bind Aware Cursor**: 동일 커서를 여러 번 수행하면서 특정 바인드 값에 대해 버퍼 I/O나 처리 건수의 편차가 사전 정의된 임계치를 초과하면 커서를 `Bind Aware` 상태로 격리한다.
 
 그러나 실무 배치 환경에서 ACS는 즉각적인 해결책이 되지 못한다.  
-커서가 `Bind Aware`로 전환되기까지 수차례의 비효율적인 실행과 모니터링 피드백 주기(Feedback Loop)가 누적되어야 한다.  
-30분에 한 번 단일 쿼리로 수십만 건을 한 번에 읽어내는 대형 배치 작업에서는, 첫 번째 잘못된 실행으로 30분 내내 시스템이 마비되기 때문에 ACS가 새로운 플랜을 학습하여 자식 커서를 분리할 기회조차 얻지 못한다.
+커서가 `Bind Aware`로 전환되기까지 수차례의 비효율적인 실행과 모니터링 피드백이 누적되어야 한다.  
+30분에 한 번 단일 쿼리로 수십만 건을 한 번에 읽어내는 대형 배치 작업에서는 첫 번째 잘못된 실행으로 30분 내내 시스템이 마비되기 때문에 ACS가 새로운 플랜을 학습하여 자식 커서를 분리할 기회를 얻기 힘든 업무 특성이 있다
 
 ### 1.3. Object Statistics 갱신과 Stale 상태
 야간이나 특정 주기마다 수행되는 자동 통계 수집(`DBMS_STATS.GATHER_DATABASE_STATS_JOB_PROC`)이나 개발팀의 수동 통계 수집은 플랜 변동의 주요 원인이다.  
 - 테이블의 데이터가 10% 이상 변경되어 통계가 `STALE` 상태가 되면 CBO의 카디널리티 계산식이 달라진다.
-- 특히 히스토그램(Frequency, Top-Frequency, Hybrid)이 새로 생성되거나 제거될 때 버킷(Bucket) 판정 기준이 뒤바뀌며 플랜이 변경된다.
+- 특히 히스토그램(Frequency, Top-Frequency, Hybrid)이 새로 생성되거나 제거될 때 버킷 판정 기준이 뒤바뀌며 플랜이 변경된다.
 - `NO_INVALIDATE => FALSE` 옵션으로 통계를 수집하거나 롤링 무효화(Rolling Invalidation, `_optimizer_invalidation_period`) 주기가 도래하는 순간 Shared Pool의 기존 커서가 일제히 무효화된다.
 
 ### 1.4. Shared Pool 메모리 에이징 및 Cursor Invalidation
-DDL 작업(테이블이나 인덱스의 컬럼 변경, 인덱스 리빌드 등)이 발생하면 해당 객체를 참조하던 모든 커서는 즉시 무효화(`INVALIDATION`)된다.  
+DDL 작업(테이블이나 인덱스의 컬럼 변경, 인덱스 리빌드 등)이 발생하면 해당 객체를 참조하던 모든 커서는 `INVALIDATION`상태가 된다.  
 또한 다른 대규모 작업으로 인해 Shared Pool의 공간이 부족해지면 오랫동안 사용되지 않은 커서가 LRU 알고리즘에 의해 메모리에서 완전히 밀려나는 Aging Out 현상이 발생한다.  
-이후 해당 SQL이 다시 유입되면 필연적으로 Hard Parse가 일어나며, 이때 어떤 바인드 값이 인입되느냐에 따라 새로운 플랜이 결정된다.
+이후 해당 SQL이 다시 유입되면 필연적으로 Hard Parse가 일어나며 이때 어떤 바인드 값이 인입되느냐에 따라 새로운 플랜이 결정된다.
 
 ---
 
 ## 2. 데이터 분포도 편차에 따른 실제 플랜 왜곡 실측 (20%)
 
-30분마다 동작하는 센터재고이동 배치는 전국의 물류 거점 센터 코드를 파라미터(`:center_cd`)로 받아 해당 센터의 실시간 재고와 이동 지시 데이터를 결합하여 처리한다.
+30분마다 동작하는 센터재고이동 배치는 전국의 물류 거점 센터 코드를 파라미터(`:center_cd`)로 받아 해당 센터의 실시간 재고와 재고 이동 데이터를 결합하여 처리한다.
 
 ### 2.1. 비즈니스 도메인의 데이터 편차(Skew)
-전국 물류망은 거점의 규모에 따라 데이터 처리량의 격차가 극심하게 발생한다.
+전국 물류망은 거점의 규모 그리고 발주 시즌의 이전 배치 수행 후의 데이터 처리량의 격차가 극심하게 발생한다.
 
 ```
 [ 물류 거점 유형별 30분당 재고이동 발생량 ]
