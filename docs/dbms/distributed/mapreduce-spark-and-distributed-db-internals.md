@@ -9,7 +9,7 @@ reading_time: "약 14분"
 
 MapReduce와 Spark의 차이를 흔히 Disk 기반과 Memory 기반의 차이로만 요약하곤 한다. 하지만 실제 대용량 배치를 운영해 보면, 두 엔진의 처리 성능 차이는 단순한 저장 매체의 속도 차이보다 JVM 프로세스 생명주기 관리, Memory Layout(On-Heap vs Off-Heap), 그리고 데이터 파이프라인(DAG) 실행 방식의 구조적 차이에서 발생한다.
 
-본 글에서는 JVM 실행 컨테이너와 In-Memory Pipelining 관점에서 MapReduce와 Spark의 내부 동작 원리를 대조하고, 나아가 Snowflake나 ClickHouse 같은 분산 분석 DB(MPP/OLAP)와 어떤 지점에서 Spark와 아키텍처적 지향점을 달리하는지, 또 실시간 트랜잭션 서비스에는 왜 MongoDB가 유리한지 정리한다.
+이번 글에서는 JVM 실행 컨테이너와 In-Memory Pipelining 관점에서 MapReduce와 Spark의 내부 동작 원리를 대조하고, 나아가 Snowflake나 ClickHouse 같은 분산 분석 DB(MPP/OLAP)와 어떤 지점에서 Spark와 아키텍처적 지향점을 달리하는지, 또 실시간 트랜잭션 서비스에는 왜 MongoDB가 유리한지 정리한다.
 
 
 ---
@@ -20,22 +20,34 @@ MapReduce와 Spark의 차이를 흔히 Disk 기반과 Memory 기반의 차이로
 
 ```mermaid
 sequenceDiagram
-    participant Master as NodeManager / Spark Driver
-    participant MR as MapReduce (1회용 JVM)
-    participant SP as Spark Executor (재사용 JVM)
+    participant NM as YARN NodeManager
+    participant JVM1 as JVM Process 1 (1회용)
+    participant JVM2 as JVM Process 2 (1회용)
+    participant Disk as Local Disk
+
+    NM->>JVM1: Task 1 실행 -> OS 프로세스 Fork & Class Loading (수 초 소요)
+    JVM1->>Disk: On-Heap Java 객체 생성 및 100MB 버퍼 Spill
+    Note over JVM1: Task 1 완료 즉시 JVM 종료 (JIT 기계어 최적화 소멸)
+
+    NM->>JVM2: Task 2 실행 -> 다시 OS 프로세스 Fork & Class Loading (수 초 소요)
+    JVM2->>Disk: Interpreter부터 재시작 후 완료 즉시 JVM 종료
+```
+<p align="center"><em>Figure 1-1: MapReduce의 1회용 Task JVM 생성 및 종료 시퀀스 (Process-per-Task)</em></p>
+
+```mermaid
+sequenceDiagram
+    participant Driver as Spark Driver
+    participant Exec as Executor JVM (종료 없이 유지)
     participant Mem as Off-Heap Memory (UnsafeRow)
 
-    alt MapReduce: Task마다 JVM 새로 기동 (Process-per-Task)
-        Master->>MR: 1. OS 프로세스 Fork 및 Class Loading (수 초 소요)
-        MR->>MR: 2. On-Heap Java 객체 생성 및 100MB 버퍼 Spill
-        Note over MR: Task 1 완료 즉시 JVM 프로세스 종료 (JIT 최적화 소멸)
-    else Spark: 기존 JVM Thread Pool 재사용 (Long-lived Executor)
-        Master->>SP: 1. LaunchTask RPC 패킷 전송 (수 ms 소요)
-        SP->>Mem: 2. sun.misc.Unsafe로 Off-Heap 바이너리 직접 연산
-        Note over SP: JVM 유지 -> 다음 Task 즉시 할당 & JIT 기계어 누적 재사용
-    end
+    Driver->>Exec: Task 1 할당 -> LaunchTask RPC 패킷 전송 (수 ms)
+    Exec->>Mem: 빈 Thread에 즉시 할당 및 Off-Heap 바이너리 연산
+    Note over Exec: Task 1 완료 후에도 JVM 유지 (JIT 기계어 Code Cache 보존)
+
+    Driver->>Exec: Task 2 할당 -> LaunchTask RPC 패킷 전송 (수 ms)
+    Exec->>Mem: 동일 JVM 내 Thread 재사용 -> 워밍업 없이 기계어 속도로 즉시 실행
 ```
-<p align="center"><em>Figure 1: MapReduce의 1회용 Task JVM 모델과 Spark의 재사용형 Executor JVM 모델 시퀀스 비교</em></p>
+<p align="center"><em>Figure 1-2: Spark의 재사용형 Executor JVM 및 Thread Pool 시퀀스 (Long-lived Executor)</em></p>
 
 ### 1.1 Task 실행 모델: 1회용 JVM 프로세스 vs Executor Thread Pool
 
