@@ -294,7 +294,7 @@ flowchart LR
 flowchart TD
 
     PARQ[("Parquet 파일 (Disk)<br/>Row Group 내 필요한 Column Chunk만 I/O")]
-    DEC{"실행 엔진 유형"}
+    DEC{{"실행 엔진 유형"}}
 
     V_READ["Vectorized Reader<br/>ColumnarBatch (4,096행 배열 로드)"]
     C2R["병목: ColumnarToRowExec<br/>세로 배열을 가로 UnsafeRow로 1행씩 재조립<br/>(전체 CPU의 20-40% 소모)"]

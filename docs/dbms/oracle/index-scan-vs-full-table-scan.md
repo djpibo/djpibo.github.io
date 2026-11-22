@@ -135,13 +135,13 @@ Index Fast Full Scan(`INDEX_FFS`)은 테이블에 접근하지 않고 인덱스 
 
 ```mermaid
 flowchart TD
-    Start["SQL 지연 현상 발생"] --> CheckPlan{"실행 계획 확인"}
+    Start["SQL 지연 현상 발생"] --> CheckPlan{{"실행 계획 확인"}}
     
-    CheckPlan -->|Index Range Scan| EvalSelectivity{"선택도 및 읽은 Block 수 평가"}
+    CheckPlan -->|Index Range Scan| EvalSelectivity{{"선택도 및 읽은 Block 수 평가"}}
     EvalSelectivity -->|"추출 건수 많음 (비효율적 Random Access)"| Sol1["해결책: Covering Index 구성 또는 FTS + Parallel 유도"]
     EvalSelectivity -->|"선택도 양호하나 지연"| Sol2["해결책: 인덱스 컬럼 순서 조정 또는 CF 점검"]
     
-    CheckPlan -->|Full Table Scan| EvalCondition{"WHERE 조건 및 테이블 볼륨 평가"}
+    CheckPlan -->|Full Table Scan| EvalCondition{{"WHERE 조건 및 테이블 볼륨 평가"}}
     EvalCondition -->|"극소수 건수 조회인데 FTS 발생"| Sol3["해결책: 통계 정보 갱신, 컬럼 가공 여부(좌변 변형) 확인, 신규 인덱스 추가"]
     EvalCondition -->|"대용량 집계 / 배치성 작업"| Sol4["해결책: Partition Pruning 적용 및 Parallel Degree 조정"]
 ```

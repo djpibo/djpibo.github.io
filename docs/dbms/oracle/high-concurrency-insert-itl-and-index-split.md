@@ -68,9 +68,9 @@ flowchart TB
 
 ```mermaid
 flowchart TD
-    A["신규 트랜잭션 진입<br/>(블록 내 변경 시도)"] --> B{"재사용 가능한<br/>ITL 슬롯 존재 여부"}
+    A["신규 트랜잭션 진입<br/>(블록 내 변경 시도)"] --> B{{"재사용 가능한<br/>ITL 슬롯 존재 여부"}}
     B -- "존재함 (커밋 완료된 슬롯)" --> C["기존 슬롯 덮어쓰기<br/>(Commit SCN 갱신 후 즉시 작업)"]
-    B -- "없음 (모든 슬롯 사용 중)" --> D{"블록 내 여유 공간<br/>(PCTFREE 24B 이상) 존재?"}
+    B -- "없음 (모든 슬롯 사용 중)" --> D{{"블록 내 여유 공간<br/>(PCTFREE 24B 이상) 존재?"}}
     D -- "공간 있음" --> E["PCTFREE에서 24B 할당하여<br/>ITL 슬롯 동적 생성 (동적 확장)"]
     D -- "공간 고갈됨 (0%)" --> F["대기 상태 진입<br/>enq: TX - allocate ITL entry"]
     F --> G["선행 트랜잭션 중 하나가 COMMIT할 때까지 블로킹"]
@@ -378,11 +378,11 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    Start["AWR / ASH 분석<br/>log file sync 대기 시간 증가 확인"] --> Check{"log file parallel write<br/>수치도 함께 높은가?"}
+    Start["AWR / ASH 분석<br/>log file sync 대기 시간 증가 확인"] --> Check{{"log file parallel write<br/>수치도 함께 높은가?"}}
     
     Check -- "YES (둘 다 높음)" --> Case1["스토리지 물리 I/O 병목<br/>- Redo Log 디스크 쓰기 지연<br/>- 느린 스토리지 멤버 다중화<br/>- 디스크 컨트롤러 대역폭 포화"]
     
-    Check -- "NO (sync만 높고 write는 정상)" --> Check2{"시스템 CPU 사용률 점검"}
+    Check -- "NO (sync만 높고 write는 정상)" --> Check2{{"시스템 CPU 사용률 점검"}}
     
     Check2 -- "CPU 90% 이상 포화" --> Case2["OS 스케줄링 지연<br/>- LGWR 프로세스가 CPU를 제때 할당받지 못함<br/>- LGWR CPU 우선순위 밀림"]
     Check2 -- "CPU 여유 있음" --> Case3["과도한 Commit 빈도 또는 IPC 지연<br/>- 반복 Loop 내 건별 Commit 남발<br/>- 다중 프로세스 간 통신 병목"]

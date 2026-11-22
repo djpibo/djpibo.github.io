@@ -41,14 +41,14 @@ reading_time: "약 6분"
 
 ```mermaid
 flowchart TD
-    START(["신규 / 기존 워크로드 DB 선정"])
-    Q1{"다운타임 시 즉각적 대규모 매출 손실 및<br/>강력한 금융·규제 감사가 수반되는가?"}
-    Q2{"계약 기반 벤더 SLA와<br/>명확한 책임 주체(면책 구조)가 필수인가?"}
-    Q3{"빠른 개발 속도, 비용 효율,<br/>신규 마이크로서비스 확장이 우선인가?"}
+    START(["워크로드 DB 선정"])
+    Q1{{"다운타임 시 대규모 매출 손실 / 금융 규제 대상인가?"}}
+    Q2{{"계약 기반 벤더 SLA와 면책 구조가 필수인가?"}}
+    Q3{{"빠른 개발 속도·비용 효율·신규 서비스 확장이 우선인가?"}}
 
-    ORACLE["Oracle 유지 / 채택<br/>RAC · Data Guard · TDE · 벤더 SLA 기반 리스크 전가"]
-    PG["PostgreSQL 채택<br/>오픈소스 투명성 · 비용 절감 · 유연한 클라우드 네이티브 확장"]
-    HYBRID["하이브리드 전략<br/>핵심 원장/결제는 Oracle 유지 + 신규 서비스는 PostgreSQL 도입"]
+    ORACLE["Oracle 유지 / 채택<br/>RAC · Data Guard · TDE · 벤더 SLA"]
+    PG["PostgreSQL 채택<br/>오픈소스 투명성 · 비용 절감 · 유연한 확장"]
+    HYBRID["하이브리드 전략<br/>핵심 원장/결제는 Oracle + 신규 서비스는 PostgreSQL"]
 
     START --> Q1
     Q1 -->|"Yes"| Q2

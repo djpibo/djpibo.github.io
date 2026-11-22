@@ -21,7 +21,7 @@ flowchart TD
 
     Q(["SQL 입력 (다중 조건 및 3-5개 이상 조인)"])
     CE["1단계: Cardinality Estimation<br/>예상 행 수 추정"]
-    CE_CHECK{"컬럼 간 Correlation / Skew<br/>정확히 반영되는가?"}
+    CE_CHECK{{"컬럼 간 Correlation / Skew 정확히 반영되는가?"}}
     CE_ERR["핵심 병목: 수 자릿수 과소평가 발생<br/>(실제 40,000행 -> 추정 300행)"]
 
     CM["2단계: Cost Model<br/>비용 계산 (영향력 제한적, 입력값에 종속)"]

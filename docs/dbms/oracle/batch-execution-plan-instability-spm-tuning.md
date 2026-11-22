@@ -420,7 +420,7 @@ SELECT /*+ LEADING(m i) USE_HASH(i) FULL(m) FULL(i) SWAP_JOIN_INPUTS(i) */
 flowchart LR
 
     subgraph BatchApp["배치 라우팅 컨트롤러"]
-        DISPATCH{"센터 유형 판별<br/>(HUB vs SUB)"}
+        DISPATCH{{"센터 유형 판별<br/>(HUB vs SUB)"}}
     end
 
     subgraph HubPipeline["대용량 허브 전용 파이프라인"]
