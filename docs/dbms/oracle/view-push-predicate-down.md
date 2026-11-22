@@ -1,7 +1,7 @@
 ---
 id: view-push-predicate-down
 title: "인라인 뷰를 처리하는 방법 두 가지: View Merging과 JPPD"
-sidebar_label: 인라인 뷰 처리와 JPPD
+sidebar_label: 인라인 뷰 처리 동작 방식
 sidebar_position: 3
 date: "2026년 8월 24일"
 reading_time: "약 6분"
@@ -17,7 +17,7 @@ Oracle 옵티마이저가 Inline View를 처리하는 물리적 방식은 크게
 
 ## 1. 첫 번째 방식: View Merging (뷰 병합)
 
-View Merging은 Inline View의 껍데기를 해체하여 부모 Query Block으로 평탄화(Flattening)하는 최적화 방식이다.
+View Merging은 Inline View의 테이블 형식으로 풀어서 메인 Query Block으로 평탄화(Flattening)하는 최적화 방식이다.
 
 ```sql
 -- 원본 SQL: Inline View 형태
@@ -48,7 +48,7 @@ WHERE D.deptno = E.deptno
 
 Inline View 내부에 `GROUP BY`나 `DISTINCT`가 포함되어 있으면 원천적으로 단순 View Merging이 불가능하다. 데이터를 먼저 집계해야 집합의 정합성이 유지되기 때문이다.
 
-이때 뷰 내부의 대량 데이터를 모두 집계하는 부하를 막기 위해, **메인 테이블의 조인 조건을 Inline View 내부의 WHERE 절로 침투시키는 기법**이 JPPD다.
+이때 인라인 뷰 내부의 대량 데이터를 모두 집계하는 부하를 막기 위해 옵티마이저는 **메인 테이블의 조인 조건을 Inline View 내부의 WHERE 절에 합치는 기법**이 JPPD다.
 
 ```sql
 -- 원본 SQL: 부서별 급여 집계 Inline View
@@ -65,7 +65,7 @@ SELECT D.dname, V.total_sal
 FROM DEPT D,
      (SELECT deptno, SUM(sal) AS total_sal
       FROM EMP
-      WHERE deptno = D.deptno -- <-- 조인 조건이 뷰 내부로 침투
+      WHERE deptno = D.deptno -- <-- 조인 조건만 뷰 내부에 추가됨
       GROUP BY deptno) V
 WHERE D.loc = 'SEOUL';
 ```
