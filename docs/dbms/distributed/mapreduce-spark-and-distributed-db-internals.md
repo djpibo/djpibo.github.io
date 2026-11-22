@@ -166,10 +166,37 @@ public long getLong(int ordinal) {
 본격적인 파이프라인 비교에 앞서, Spark 환경에서 표준 입력 파일로 사용하는 Parquet 포맷의 데이터 표현 방식을 먼저 짚고 넘어간다.
 
 #### 사전 배경: Parquet 파일은 데이터를 어떻게 표현하는가?
-일반 텍스트 파일(CSV, JSON)은 파일 안에 `1001,APPLE,50000`처럼 가로 행(Row) 순서대로 글자를 나열한다. 이 방식은 `price` 컬럼 하나만 합산하려고 해도 파일 전체의 `id`와 `name` 문자열까지 디스크에서 전부 읽어야 한다.
-반면 Parquet(Columnar 파일 포맷)는 데이터를 가로가 아닌 세로(컬럼)끼리 모아서 배열 형태로 저장한다.
-- 파일 내부에 `id` 값만 100만 개 연속으로 모아둔 구역(`Column Chunk`), `name`만 100만 개 모아둔 구역, `price`만 100만 개 모아둔 구역이 따로 분리되어 있다.
-- 또한 파일 맨 끝(`Footer`)에는 각 구역별 최솟값(`Min`)과 최댓값(`Max`) 통계가 적혀 있다. 덕분에 Spark가 Parquet 파일을 읽을 때는 쿼리에 필요한 컬럼 구역만 골라서 읽고(Column Projection), 조건에 맞지 않는 데이터 블록은 아예 건너뛰며 빠르게 스캔이 가능하다.
+일반 텍스트 파일(CSV, JSON)은 파일 안에 가로 행(Row) 순서대로 글자를 나열한다. 이 방식은 `price` 컬럼 하나만 합산하려고 해도 파일 전체의 `id`와 `name` 문자열, 그리고 매 줄마다 반복되는 JSON 키 이름까지 디스크에서 전부 읽어야 한다.
+
+```json title="orders.json (Row 기반 텍스트 저장: 매 행마다 키와 모든 컬럼이 반복)"
+{"id": 1001, "name": "APPLE",  "price": 50000}
+{"id": 1002, "name": "BANANA", "price": 30000}
+{"id": 1003, "name": "APPLE",  "price": 70000}
+```
+
+반면 Parquet(Columnar 바이너리 파일 포맷)는 위 3건의 데이터를 가로가 아닌 세로(컬럼)끼리 모아서 압축된 블록 단위로 저장한다. 실제 바이너리 파일 내부의 논리적 배치를 풀어서 표현하면 다음과 같다.
+
+```text title="orders.parquet (Columnar 바이너리 내부 구조: 컬럼별 분리 + 하단 Footer 통계)"
+[Header] PAR1 (4-Byte Magic Number)
+
+[Row Group 0] (보통 128MB 단위 가로 블록)
+  ├─ Column Chunk 0 (id: INT64)      : [1001, 1002, 1003]              (Delta Encoding)
+  ├─ Column Chunk 1 (name: BYTE_ARR) : Dict={0:"APPLE", 1:"BANANA"}
+  │                                    Values=[0, 1, 0]                (Dictionary + RLE 압축)
+  └─ Column Chunk 2 (price: INT64)   : [50000, 30000, 70000]           (OFFSET: +104B)
+
+[File Footer (메타데이터)]
+  ├─ Schema: { id: INT64, name: STRING, price: INT64 }
+  └─ Row Group 0 Statistics:
+       ├─ id    : min=1001,  max=1003,  null_count=0
+       ├─ name  : min="APPLE", max="BANANA", null_count=0
+       └─ price : min=30000, max=70000, null_count=0, file_offset=104B
+
+[Footer Length (4B)] [PAR1]
+```
+
+- 파일 내부에 `id`, `name`, `price` 구역(`Column Chunk`)이 물리적으로 분리되어 있어, `SELECT SUM(price)`를 실행할 때 `Footer`에 적힌 `file_offset=104B` 위치로 바로 이동해 `price` 구역만 읽어낸다(Column Projection).
+- 또한 `Footer`에 각 Row Group별 최솟값(`min`)과 최댓값(`max`) 통계가 기록되어 있어, `WHERE price > 100000` 같은 조건이 들어오면 `max=70000`만 확인하고 해당 블록(수백만 행)을 압축조차 풀지 않고 통째로 건너뛴다(Predicate Pushdown / Skipping).
 
 ```mermaid
 sequenceDiagram
@@ -348,7 +375,7 @@ sequenceDiagram
     participant Meta as 메타데이터 / 인덱스 계층
     participant Disk as 실제 데이터 스토리지
 
-    alt 1. Spark + Iceberg / Delta Lake (Manifest 기반 2단계 Pruning)
+    alt 1. Spark + Iceberg / Delta Lake (Manifest 기반 2단계 File-level Pruning)
         Query->>Meta: Manifest / _delta_log 파일 조회 (파일별 컬럼 Min/Max 확인)
         Meta-->>Query: 조건에 맞는 대상 Parquet 파일 목록 선별 (1차 Pruning)
         Query->>Disk: S3 Parquet 파일(128MB-1GB) Footer 확인 후 해당 Row Group만 스캔
@@ -364,8 +391,8 @@ sequenceDiagram
 ```
 <p align="center"><em>Figure 7: Spark(Iceberg/Delta), Snowflake, ClickHouse의 메타데이터 조회 및 디스크 Data Skipping 시퀀스 비교</em></p>
 
-1. Spark + Apache Iceberg / Delta Lake (Manifest 파일 기반 Pruning):
-   - 저장 방식: S3 같은 오브젝트 스토리지에 128MB-1GB 크기의 Parquet 파일들을 저장하고, 별도의 메타데이터 파일(`Manifest File` 또는 `_delta_log`)에 각 Parquet 파일의 컬럼별 `Min/Max` 통계를 기록해 둔다.
+1. Spark + Apache Iceberg / Delta Lake (Manifest File-level Pruning):
+   - 저장 방식: S3 같은 오브젝트 스토리지에 128MB-1GB 크기의 Parquet 파일들을 저장하고, 별도의 메타데이터 파일(`Manifest File` 또는 `_delta_log`)에 각 Parquet 파일의 컬럼별 `Min/Max` 통계를 기록한다.
    - 탐색 과정: 쿼리가 들어오면 먼저 Manifest 파일을 읽어 조건에 해당하지 않는 Parquet 파일들을 통째로 제외(1차 파일 Pruning)하고, 선택된 Parquet 파일 안에서도 하단 `Footer`를 읽어 조건에 맞는 `Row Group`과 `Column Chunk`만 디스크에서 읽어 들인다.
 2. Snowflake (Cloud Services 전역 메타데이터 + Micro-partition):
    - 저장 방식: 데이터를 적재할 때 압축 전 기준 50-500MB 크기의 작은 불변 컬럼 파일인 `Micro-partition`으로 자동 분할해 S3에 저장한다. 이때 파일 내부에 통계를 두는 것이 아니라, 컴퓨팅 노드 바깥의 독립된 중앙 데이터베이스(`FoundationDB` 기반 Cloud Services 계층)에 모든 Micro-partition의 컬럼별 `Min/Max`, `Distinct Count`, `Null` 여부를 전부 추출해 저장해 둔다.
