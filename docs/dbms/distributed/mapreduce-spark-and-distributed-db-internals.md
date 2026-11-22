@@ -21,8 +21,8 @@ MapReduce와 Spark의 차이를 흔히 Disk 기반과 Memory 기반의 차이로
 ```mermaid
 sequenceDiagram
     participant NM as YARN NodeManager
-    participant JVM1 as JVM Process 1 (1회용)
-    participant JVM2 as JVM Process 2 (1회용)
+    participant JVM1 as JVM Process 1 (일회용)
+    participant JVM2 as JVM Process 2 (일회용)
     participant Disk as Local Disk
 
     NM->>JVM1: Task 1 실행 -> OS 프로세스 Fork & Class Loading (수 초 소요)
@@ -32,7 +32,7 @@ sequenceDiagram
     NM->>JVM2: Task 2 실행 -> 다시 OS 프로세스 Fork & Class Loading (수 초 소요)
     JVM2->>Disk: Interpreter부터 재시작 후 완료 즉시 JVM 종료
 ```
-<p align="center"><em>Figure 1-1: MapReduce의 1회용 Task JVM 생성 및 종료 시퀀스 (Process-per-Task)</em></p>
+<p align="center"><em>Figure 1-1: MapReduce의 일회용 Task JVM 생성 및 종료 시퀀스 (Process-per-Task)</em></p>
 
 ```mermaid
 sequenceDiagram
@@ -49,28 +49,31 @@ sequenceDiagram
 ```
 <p align="center"><em>Figure 1-2: Spark의 재사용형 Executor JVM 및 Thread Pool 시퀀스 (Long-lived Executor)</em></p>
 
-### 1.1 Task 실행 모델: 1회용 JVM 프로세스 vs Executor Thread Pool
+### 1.1 Task 실행 모델: 일회용 JVM 프로세스 vs Executor Thread Pool
 
-#### (1) MapReduce: Task 1개마다 JVM을 새로 띄우고 끄는 1회용 프로세스 방식
+#### (1) MapReduce: Task 1개마다 JVM을 새로 띄우고 끄는 일회용 프로세스 방식
 MapReduce는 하나의 Map Task나 Reduce Task를 실행할 때마다 YARN의 `NodeManager`가 별도의 JVM 프로세스를 새로 띄운다(Fork). 그리고 그 Task 1개의 처리가 끝나면 해당 JVM 프로세스를 즉시 종료시킨다.
-- 장점 (장애 격리와 GC 부담 제거): 특정 Task에서 `OutOfMemoryError`가 발생해도 다른 Task와 프로세스가 분리되어 있어 서로 영향이 없다. 또한 Task 하나만 처리하고 몇 초나 몇 분 만에 JVM 프로세스 자체가 곧바로 종료되므로, 메모리에 쌓인 쓰레기 객체를 굳이 Garbage Collection(GC)으로 청소할 필요 없이 OS가 프로세스 종료와 함께 메모리 전체를 한 번에 회수한다.
-- 단점 (반복되는 기동 비용): 수만 개의 짧은 Task로 구성된 Job을 실행할 때, 매번 무거운 JVM 프로세스를 OS 레벨에서 새로 띄우고 수백 개의 `.class` 파일을 디스크에서 로딩(Class Loading)하는 데만 매 Task마다 수 초씩 고정 시간이 소모된다.
+- 장점 (장애 격리와 GC 부담 제거): 
+  - 특정 Task에서 `OutOfMemoryError`가 발생해도 다른 Task와 프로세스가 분리되어 있어 서로 영향이 없다. 
+  - 또한 Task 하나만 처리하고 몇 초나 몇 분 만에 JVM 프로세스 자체가 곧바로 종료되므로 메모리에 쌓인 쓰레기 객체를 굳이 Garbage Collection(GC)으로 청소할 필요 없이 OS가 프로세스 종료와 함께 메모리 전체를 한 번에 회수한다.
+- 단점 (반복되는 기동에 대한 오버헤드 비용 발생):
+  - 수만 개의 짧은 Task로 구성된 Job을 실행할 때 매번 무거운 JVM 프로세스를 OS 레벨에서 새로 띄우고 수백 개의 `.class` 파일을 디스크에서 로딩(Class Loading)하는 데만 매 Task마다 수 초씩 고정 시간이 소모된다.
 
 #### (2) Spark: 한 번 띄워 두고 끝날 때까지 재사용하는 Executor JVM 방식
 Spark는 배치 작업(Application)이 시작될 때 각 워커 노드에 `Executor`라는 JVM 프로세스를 미리 띄워 두고, 전체 작업이 완전히 끝날 때까지 이 JVM을 끄지 않고 계속 유지한다(웹 서버의 WAS나 DB의 백그라운드 프로세스를 계속 띄워 두는 것과 같다).
 
 Driver가 새로운 Task를 할당할 때는 무거운 JVM 프로세스를 새로 띄우는 대신, 이미 떠 있는 Executor 내부의 Thread Pool에서 놀고 있는 Thread 하나에 작업만 넘겨주어 즉시 실행한다. 이때 두 가지 핵심 메커니즘이 작동한다.
 
-- `LaunchTask RPC`를 통한 초고속 작업 전달:
+- `LaunchTask RPC`를 통한 가벼운 태스크 수행:
   MapReduce가 Task를 실행하려고 OS에 새 프로세스 생성을 요청(`fork & exec`, 수 초 소요)하는 것과 달리, Spark Driver는 이미 Executor와 연결된 네트워크 소켓(Netty 기반 RPC, Remote Procedure Call)을 통해 "몇 번 데이터 블록을 읽어서 이 함수를 실행하라"는 수 킬로바이트(KB)짜리 작업 명세서 패킷(`LaunchTask` 메시지) 하나만 전송한다. Executor는 이 네트워크 메시지만 받아서 빈 Thread에 바로 태우므로 Task 시작 지연 시간이 수 밀리초(ms) 단위로 줄어든다.
 - JIT(Just-In-Time) Compiler의 기계어 최적화 누적:
   JVM은 처음에 기동되면 `.class` 바이트코드를 Interpreter가 한 줄씩 읽어서 기계어로 통역하며 실행하기 때문에 초기 속도가 느리다. 그러다 특정 루프나 함수가 수천 번 이상 반복 실행(Hotspot 감지)되면, JVM 내부의 JIT Compiler(C1/C2)가 개입하여 해당 바이트코드 구간 전체를 CPU가 통역 없이 바로 실행할 수 있는 순수 기계어(Native Machine Code)로 통째로 번역해 메모리의 Code Cache에 저장한다(이 과정에서 함수 호출을 합치는 Inlining 등 코드 최적화도 함께 수행된다).
-  - MapReduce의 한계: 데이터를 읽으며 이제 막 JIT Compiler가 기계어 번역을 마쳐 속도가 빨라질 만하면 Task가 끝나서 JVM 프로세스가 꺼져 버린다. 다음 Task가 뜨면 새 JVM에서 또 느린 Interpreter부터 다시 시작해야 한다.
-  - Spark의 이점: Executor JVM이 꺼지지 않고 계속 살아 있으므로, 초반 몇 개 Task를 처리할 때 한 번 JIT 컴파일된 고속 기계어 코드가 메모리에 그대로 유지된다. 덕분에 이후 실행되는 수만 개의 후속 Task는 워밍업 과정 없이 처음부터 컴파일된 기계어 속도로 실행된다.
+  - MapReduce의 비효율적 구조: 데이터를 읽으며 이제 막 JIT Compiler가 기계어 번역을 마쳐 속도가 빨라질 만하면 Task가 끝나서 JVM 프로세스가 꺼져 버린다. 다음 Task가 뜨면 새 JVM에서 또 느린 Interpreter부터 다시 시작해야 한다.
+  - Spark의 효율적 구조: Executor JVM이 꺼지지 않고 계속 살아 있으므로, 초반 몇 개 Task를 처리할 때 한 번 JIT 컴파일된 고속 기계어 코드가 메모리에 그대로 유지된다. 덕분에 이후 실행되는 수만 개의 후속 Task는 워밍업 과정 없이 처음부터 컴파일된 기계어 속도로 실행된다.
 
 ---
 
-### 1.2 메모리 관리: On-Heap 객체 의존 대 Project Tungsten (Off-Heap)
+### 1.2 메모리 관리: On-Heap 객체 의존 vs Project Tungsten (Off-Heap)
 
 Spark처럼 JVM을 끄지 않고 계속 띄워 두는 방식을 쓰면 필연적으로 Java 객체의 메모리 낭비와 GC Stop-the-World 문제를 마주하게 된다.
 
@@ -105,28 +108,37 @@ sequenceDiagram
 <p align="center"><em>Figure 2: CPU Core, L1/L2 Cache, JVM On-Heap, OS Off-Heap 물리 공간 간 데이터 조회 왕복 횟수 및 지연 비교</em></p>
 
 #### 왜 Off-Heap이 유리하며 CPU L1/L2 Cache Locality가 높아지는가?
-1. GC 오버헤드 완전 제거:
+1. `GC 오버헤드 제거`:
    On-Heap은 JVM의 Garbage Collector가 수억 개 객체의 참조 그래프를 일일이 추적하며 청소해야 한다. 반면 Off-Heap은 JVM Heap 바깥의 OS 메모리 영역(`malloc`과 유사한 `Unsafe.allocateMemory`)에 Spark가 직접 큰 메모리 페이지를 할당받아 쓰는 공간이다. GC는 이 영역을 아예 쳐다보지 않으므로 데이터가 수십 GB 쌓여도 GC 멈춤 현상이 발생하지 않는다.
-2. Pointer Chasing 제거와 CPU L1/L2 Cache Locality(공간 지역성) 극대화:
-   CPU가 연산을 수행할 때 메인 메모리(RAM)까지 직접 가서 데이터를 가져오면 약 60-100 나노초(ns)가 걸리지만, CPU 코어 내부의 L1 Cache에서 가져오면 약 1 나노초(ns)밖에 걸리지 않는다.
-   이 때문에 CPU는 RAM에서 데이터를 읽을 때 요청받은 몇 바이트만 가져오지 않고, 그 주소 주변의 연속된 64바이트(Cache Line)를 한 덩어리로 묶어 L1/L2 Cache에 미리 올려둔다(Spatial Locality 활용).
-   - On-Heap의 문제: 위 `Figure 2`의 상단처럼 `Row` 객체(`0x1000`), `String` 객체(`0x5A00`), 실제 문자열 바이트 배열(`0x9F00`)이 메모리 여기저기에 흩어져 생성된다. CPU가 `Row`를 읽으면서 주변 64바이트를 L1 Cache에 올려봤자, 정작 필요한 문자열은 전혀 다른 주소(`0x9F00`)에 있으므로 L1 Cache에 없는 상태(Cache Miss)가 되어 매번 느린 RAM까지 다시 다녀와야 한다(Pointer Chasing).
-   - Off-Heap(`UnsafeRow`)의 이점: 한 행의 모든 컬럼 값과 문자열 바이트가 `0x2000`번지부터 빈틈없이 일렬로 붙어 있다. CPU가 행의 시작 주소만 읽어도 64바이트 Cache Line 안에 `id`, `price`, `name` 데이터까지 한꺼번에 딸려 들어와 L1/L2 Cache에 적재된다. 즉, 다음 컬럼을 읽을 때 RAM에 갈 필요 없이 L1 Cache에서 1ns 만에 즉시 꺼내 쓸 수 있어(Cache Hit) CPU 연산 속도가 크게 향상된다.
+2. `CPU L1/L2 Cache Locality 향상과 Pointer Chasing 제거`:
+   CPU가 연산을 수행할 때 메인 메모리(RAM)까지 직접 가서 데이터를 가져오면 약 60-100 나노초(ns)가 걸리지만 CPU 코어 내부의 L1 Cache에서 가져오면 약 1 나노초(ns)밖에 걸리지 않는다.
+   이 때문에 CPU는 RAM에서 데이터를 읽을 때 요청받은 몇 바이트만 가져오지 않고 주소 주변의 연속된 64바이트를 한 덩어리로 묶어 L1/L2 Cache에 미리 올려둔다(Spatial Locality).
+   - On-Heap의 문제(`Pointer Chasing`): 위 `Figure 2`의 상단처럼 `Row` 객체(`0x1000`), `String` 객체(`0x5A00`), 실제 문자열 바이트 배열(`0x9F00`)이 메모리 여기저기에 흩어져 생성된다. CPU가 `Row`를 읽으면서 주변 64바이트를 L1 Cache에 올려봤자, 정작 필요한 문자열은 전혀 다른 주소(`0x9F00`)에 있으므로 L1 Cache에 없는 상태에서 Cache Miss가 발생하면 매번 느린 RAM까지 다시 다녀와야 한다.
+   - Off-Heap(`UnsafeRow`)의 이점: 한 행의 모든 컬럼 값과 문자열 바이트가 `0x2000`번지부터 빈틈없이 일렬로 붙어 있다. CPU가 행의 시작 주소만 읽어도 64바이트 Cache Line 안에 `id`, `price`, `name` 데이터까지 한꺼번에 딸려 들어와 L1/L2 Cache에 적재된다. 즉, 다음 컬럼을 읽을 때 RAM에 갈 필요 없이 L1 Cache에서 1ns 만에 즉시 꺼내 쓸 수 있어 Cache Hit를 높이며 이는 CPU 연산 속도 향상에 기여한다.
 
 #### 1.2.1 `UnsafeRow`의 3단 구조와 `sun.misc.Unsafe` 접근 원리
 
 Spark가 Off-Heap(또는 연속된 바이트 배열)에 한 행을 저장할 때 사용하는 바이너리 포맷이 `UnsafeRow`다. 구조는 아래 그림처럼 단순한 3단 구획으로 나뉜다.
 
 ```mermaid
-flowchart LR
-
-    NULL_BIT["[1] Null Bitmap (8B)<br/>+0B: 컬럼별 Null 표시"]
-    SLOTS["[2] 고정 8B Slot 영역 (컬럼당 8B 고정)<br/>+8B: id = 1001<br/>+16B: name = (위치 +32B, 길이 5)<br/>+24B: price = 50000"]
-    VAR_DATA[("[3] 가변 데이터 영역<br/>+32B: 'APPLE' (실제 문자열)")]
-
-    NULL_BIT --> SLOTS --> VAR_DATA
+---
+config:
+  packet:
+    bitsPerRow: 8
+    bitWidth: 74
+    rowHeight: 46
+---
+packet-beta
+  title UnsafeRow 40-Byte Memory Layout (Base Address: 0x2000, 8-Byte Word Aligned)
+  0-7: "[1] Null Bitset Bitmap (8B) — 각 컬럼 NULL 여부 (1 bit)"
+  8-15: "[2-0] Slot 0 (id: Long) = 1001"
+  16-19: "[2-1] name Offset (+32B)"
+  20-23: "[2-1] name Length (5B)"
+  24-31: "[2-2] Slot 2 (price: Long) = 50000"
+  32-36: "[3] Variable Data: 'A' 'P' 'P' 'L' 'E' (5B)"
+  37-39: "Padding (0x00 x 3B)"
 ```
-<p align="center"><em>Figure 3: (id=1001, name='APPLE', price=50000) 레코드를 연속 바이트로 배치한 UnsafeRow 3단 구조</em></p>
+<p align="center"><em>Figure 3: (id=1001, name='APPLE', price=50000) 레코드의 실제 40바이트(8바이트 워드 정렬) UnsafeRow 메모리 주소 배치</em></p>
 
 1. [1] Null Bitmap 영역 (`+0B`, 8 Bytes): 각 컬럼이 `NULL`인지 여부를 1비트씩 기록한다.
 2. [2] 고정 8B Slot 영역 (`컬럼 수 * 8 Bytes`): 데이터 타입과 무관하게 모든 컬럼에 무조건 8바이트 고정 칸을 배정한다. 숫자(`id`, `price`)는 그 칸에 값을 바로 적고, 길이가 변하는 문자열(`name`)은 `[실제 글자가 적힌 뒤쪽 상대 위치(+32B) | 글자 길이(5)]` 정보만 8바이트 숫자로 압축해서 적는다.
