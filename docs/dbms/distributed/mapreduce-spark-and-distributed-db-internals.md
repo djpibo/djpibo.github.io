@@ -767,4 +767,4 @@ flowchart TD
 3. 대규모 정제 및 배치 조인 계층 (`Apache Spark` + `Photon` / `Gluten`):
    수십 테라바이트의 원본 로그와 여러 도메인 테이블을 묶는 무거운 멀티 레이어 조인, 집계, 배치, 머신러닝 전처리는 로컬 디스크 Shuffle 파일 체크포인트(`.data`/`.index`)를 통해 노드 장애나 메모리 한계에도 끝까지 완주해 내는 Spark가 담당한다.
 4. 고속 분석 및 서빙 계층 (`Snowflake` / `BigQuery` / `ClickHouse`):
-   정제된 마트 데이터를 바탕으로 복잡한 다중 테이블 전사 BI 분석은 Snowflake가 서버 관리 없는 페타바이트급 중첩 JSON, Ad-hoc 분석은 BigQuery가 대고객 실시간 통계 대시보드와 로그 집계는 C++ SIMD와 로컬 SSD Sparse Index를 극대화한 ClickHouse가 각자의 강점 영역을 맡는다.
+   정제된 마트 데이터를 바탕으로 복잡한 다중 테이블 전사 BI 분석은 중앙 관리형 DB가 내장된 Snowflake으로. 서버 관리 없는 페타바이트급 중첩 JSON, Ad-hoc 분석은 BigQuery로. 대고객 실시간 통계 대시보드와 로그 집계는 C++ SIMD와 로컬 SSD Sparse Index를 극대화한 ClickHouse가 각자의 강점 영역을 맡는다.

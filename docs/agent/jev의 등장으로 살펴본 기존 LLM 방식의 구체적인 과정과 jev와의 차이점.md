@@ -1,13 +1,13 @@
 ---
 id: jev-vs-traditional-llm-mechanics
-title: jev의 등장으로 살펴본 기존 LLM 방식의 구체적인 과정과 jev와의 차이점
+title: jev의 등장으로 살펴본 기존 LLM 방식의 구체적인 동작 방식 분석과 jev의 특징
 sidebar_label: Jev와 기존 LLM의 물리적 차이
 sidebar_position: 2
 date: "2026년 9월 20일"
 reading_time: "약 15분"
 ---
 
-# jev의 등장으로 살펴본 기존 LLM 방식의 구체적인 과정과 jev와의 차이점
+# jev의 등장으로 살펴본 기존 LLM 방식의 구체적인 동작 방식 분석과 jev의 특징
 
 인공지능 생태계는 오랫동안 더 많은 토큰을 생성하고, 더 긴 사고 사슬(Chain-of-Thought)을 전개하는 방향으로 진화했다. OpenAI의 o1/o3나 DeepSeek-R1 같은 Reasoning LLM은 모델 내부에서 수천 개의 보이지 않는 추론 토큰을 순차 생성하며 복잡한 문제를 풀어내는 데 집중한다.
 

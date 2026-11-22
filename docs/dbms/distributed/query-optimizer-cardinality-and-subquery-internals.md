@@ -1,7 +1,7 @@
 ---
 id: query-optimizer-cardinality-and-subquery-internals
-title: "쿼리 옵티마이저의 한계: 2편의 VLDB 논문 분석과 Subquery·WITH 절의 동작 원리"
-sidebar_label: VLDB 옵티마이저 한계와 Subquery·WITH
+title: "쿼리 옵티마이저의 한계: How Good Are Query Optimizers, Really? 논문에서 밝히는 Subquery, WITH 절의 동작 원리를 중심으로"
+sidebar_label: VLDB 옵티마이저 한계와 Subquery, WITH
 sidebar_position: 2
 date: "2026년 9월 27일"
 reading_time: "약 11분"
@@ -14,7 +14,7 @@ reading_time: "약 11분"
 
 ---
 
-## 1. 2편의 VLDB 논문 정리: Optimizer 실측 결과
+## 1. 두 편의 VLDB 논문 정리: Optimizer 실측 결과
 
 ```mermaid
 flowchart TD
@@ -35,23 +35,23 @@ flowchart TD
 ```
 <p align="center"><em>Figure 1: Query Optimizer 의사결정 흐름과 Cardinality 오차가 실행 계획 전체로 전파되는 구조</em></p>
 
-### 1.1 기존 Benchmark의 문제점과 Join Order Benchmark(JOB)
+### 1.1 기존 Benchmark의 문제점과 Join Order Benchmark
 연구진은 TPC-H, TPC-DS 같은 기존 표준 Benchmark가 실행 엔진의 연산 처리량을 평가하는 데는 적합하지만, Optimizer의 경로 탐색을 검증하는 데는 한계가 있다고 분석했다.
 - 기존 Benchmark의 데이터 생성기는 데이터 스케일링을 위해 Uniformity와 Independence를 기본 전제로 채택한다.
-- Optimizer 역시 동일한 가정을 바탕으로 모델링하므로, 기존 Benchmark 환경에서는 Optimizer의 추정 결함이 수치상 드러나지 않는 편이다.
-- 연구진은 컬럼 간 Correlation과 Skew가 존재하는 실세계 데이터셋인 IMDB를 기반으로 113개 쿼리로 구성된 Join Order Benchmark(JOB)를 설계하여 실제 동작을 검증했다.
+- Optimizer 역시 동일한 가정을 바탕으로 모델링하므로 기존 Benchmark 환경에서는 Optimizer의 추정 결함이 수치상 드러나지 않는 편이다.
+- 연구진은 컬럼 간 Correlation과 Skew가 존재하는 실세계 데이터셋인 IMDB를 기반으로 113개 쿼리로 구성된 Join Order Benchmark를 설계하여 실제 동작을 검증했다.
 
-### 1.2 논문의 3대 핵심 실측 결과
+### 1.2 논문에서 말하는 기존 실측 방식에 대한 비판
 
 #### (1) Cardinality Estimation의 지수적 오차
 Cardinality Estimation은 전체 최적화 과정에서 가장 큰 오차를 발생시키는 구간이다.
 - 단일 테이블의 단일 조건은 샘플링을 적용하면 Q-error 중앙값이 1.0 수준으로 비교적 정확하다.
 - 그러나 검색 조건(WHERE 절 술어)이 여러 개로 늘어나거나 조인이 3~5개를 넘어가면 추정치와 실제 행 수 간에 1,000배에서 1억 배에 달하는 오차가 일상적으로 발생했다.
-- 특히 다중 조건 및 다중 조인 환경에서는 Independence 가정을 반복 적용하여 결과 행 수를 실제보다 훨씬 작게 계산하는 **체계적인 Underestimation 경향**이 지배적이었다.
+- 특히 다중 조건 및 다중 조인 환경에서는 Independence 가정을 반복 적용하여 결과 행 수를 실제보다 훨씬 작게 계산하는 **Underestimation 경향**이 뚜렷하게 보였다.
 
 **[검색 조건 누적 시 과소평가 발생 메커니즘과 수치 예시]**
 
-복수의 조건이 `AND`로 연결될 때, 옵티마이저는 각 조건의 Selectivity를 단순 곱연산한다.
+복수의 조건이 `AND`로 연결될 때, 옵티마이저는 각 조건의 Selectivity를 `단순 곱연산`한다.
 `예상 행 수 = 전체 행 수 * Selectivity(조건 1) * Selectivity(조건 2) * Selectivity(조건 3) * Selectivity(조건 4)`
 
 1,000만 행이 저장된 차량 테이블에서 4개의 검색 조건이 들어온 상황을 가정한다.
@@ -71,11 +71,12 @@ Cardinality Estimation은 전체 최적화 과정에서 가장 큰 오차를 발
    - 실제 40,000행인 결과를 단 300행으로 계산하여 **130배 이상의 Underestimation**이 발생한다.
    - 만약 여기에 조건이 1~2개 더 추가되면 추정치는 1행 수준으로 떨어지며 오차율은 수천 배 이상으로 폭증한다.
    - 옵티마이저는 300행이라는 숫자를 신뢰하고 인덱스 스캔 후 다음 테이블과 Nested-Loop Join을 체결하지만, 실제 40,000번의 루프가 돌면서 Random I/O 급증과 응답 지연이 발생한다.
+   - 데이터에 대한 연관성 없이 단순 곱연산으로 수행되기 때문이다.
 
 **[Hash Join 환경에서의 Rehash 및 메모리 할당 이슈]**
 설령 옵티마이저가 Nested-Loop Join을 피해 Hash Join을 선택하더라도 과소평가 문제에서 자유롭지 못하다.
 - Hash Join은 Build Input의 카디널리티 추정치를 기준으로 메모리 내 해시 테이블의 버킷(Bucket) 수를 사전 할당한다.
-- 실제 행 수가 추정치보다 훨씬 많으면, 할당된 해시 버킷 수가 턱없이 부족하여 동일 버킷에 수많은 데이터가 매달리는 극단적인 Hash Collision Chain이 발생한다.
+- 실제 행 수가 추정치보다 훨씬 많으면, 할당된 해시 버킷 수가 턱없이 부족하여 동일 버킷에 수많은 데이터가 경합되는 Hash Collision Chain이 발생한다.
 - 런타임에 해시 테이블 크기를 동적으로 늘리는 Rehashing 과정을 거치면서 과도한 메모리 재할당 오버헤드가 발생하거나, `work_mem` 한도를 초과하여 중간 데이터를 디스크로 내려쓰는 Spill to Disk가 발생해 I/O 병목으로 이어진다.
 - 2015년 논문에서도 PostgreSQL 9.4에서 카디널리티 과소평가로 발생한 해시 테이블 병목을 해결하기 위해, 런타임에 실제 저장된 행 수에 맞춰 동적으로 해시 테이블을 리사이징하는 패치(Rehashing)를 적용한 뒤에야 성능이 안정화되었음을 실측으로 입증했다.
 
@@ -120,7 +121,7 @@ flowchart LR
   - Size 1(단일 테이블 접근) -> Size 2(연결된 2개 테이블 최적 조인) -> Size 3(부분결과 결합) -> Size 4 순서로 확장된다.
   - Size 4에서 `(Size 1 + Size 3)`의 선형 결합뿐만 아니라, **`(Size 2 + Size 2)`처럼 서브 조인 결과를 서로 결합하는 Bushy Tree 대안**까지 함께 계산하여 최종 최저 비용 플랜을 확정한다.
 * **실제 Optimizer의 트리 채택 현황**:
-  - 전통적 DBMS(Oracle 등)는 탐색 공간 크기 제어와 메모리 파이프라이닝의 단순성을 위해 단일 쿼리 블록 내에서 **Left-Deep Tree 중심**으로 탐색을 제한했다. 테이블 수가 늘어날 때 Bushy Tree를 허용하면 계산해야 할 경우의 수가 급격히 늘어나기 때문이다(다만 Oracle에서도 서브쿼리 언네스팅, 스타 변환, `LEADING` 힌트 적용 시 Bushy 구조가 생성된다).
+  - 전통적 DBMS(Oracle 등)는 탐색 공간 크기 제어와 메모리 파이프라이닝의 단순성을 위해 단일 쿼리 블록 내에서 **Left-Deep Tree 중심**으로 탐색을 제한했다. 테이블 수가 늘어날 때 Bushy Tree를 허용하면 계산해야 할 경우의 수가 급격히 늘어나기 때문이다(다만 Oracle에서도 Subquery Unnesting, Star Transform, `LEADING` 힌트 적용 시 Bushy 구조가 생성된다).
   - 현대 오픈소스(PostgreSQL) 및 분산 쿼리 엔진(Trino, Spark)은 병렬 처리를 위해 Bushy Tree를 기본 탐색 공간에 포함하여 활용한다.
 * **Bushy Tree 전환 시의 물리적 이점**:
   1. **중간 데이터 크기 축소**: `(A ⋈ B)`와 `(C ⋈ D)` 양 갈래에서 먼저 데이터를 거른 후 작은 결과셋끼리 결합하므로 상위 연산자로 유입되는 행 수가 크게 줄어든다.
@@ -134,7 +135,7 @@ flowchart LR
 2015년 이후 딥러닝과 강화학습을 활용한 Learned Optimizer 연구가 다수 진행되었다. 그러나 2025년 회고 논문에서는 학습 기반 모델이 상용 DBMS 프로덕션에 폭넓게 안착하지 못했다고 설명한다.
 - 모델 훈련 및 추론 비용이 높고, 데이터 변경 시 재학습 부담이 크며, 내부 동작을 예측하기 어려운 점이 한계로 작용했다.
 - 특히 전체 쿼리 평균이 개선되더라도 특정 쿼리의 응답 시간이 급증하는 Performance Regression이 발생하면 시스템 배포가 어렵다.
-- 이에 따라 현대 DBMS는 정적 컴파일 단계의 추정에만 의존하지 않고, 런타임에 실제 행 수를 측정하여 조인 방식을 동적으로 변경하는 Adaptive Execution 기법을 확대하는 추세다.
+- 이에 따라 현대 DBMS는 정적 컴파일 단계의 추정에만 의존하지 않고, 런타임에 실제 행 수를 측정하여 조인 방식을 동적으로 변경하는 `Adaptive Execution 기법`을 확대하는 추세다.
 
 
 ---
@@ -201,12 +202,12 @@ Optimizer는 부모 Query Block과 자식 Query Block을 분리하여 비용을 
 
 ---
 
-## 3. 엔지니어링 관점의 정리
+## 3. 정리
 
 두 편의 논문과 내부 메커니즘이 제시하는 내용은 다음과 같다.  
-Query Optimizer는 단순화된 통계 모델과 독립성 가정에 기반하여 작동하는 계산 엔진이다.
+Query Optimizer는 단순화된 통계 모델과 독립성 가정에 기반하여 작동하는 계산 엔진이다. 데이터 연관성은 깊은데 단순 곱연산으로 예상 row가 적다고 판단하는 경우가 발생한다.
 
-특히 Subquery와 WITH 절처럼 Query Block 경계가 생기는 구간에서는 Cardinality 계산 오차가 커질 확률이 높다. 따라서 다음과 같은 접근이 권장된다.
+또한, Subquery와 WITH 절처럼 Query Block 경계가 생기는 구간에서는 Cardinality 계산 오차가 커질 확률이 높다. 따라서 다음과 같은 접근이 권장된다.
 
 1. **실행 계획의 오퍼레이션 분석**:
    - 실행 계획에 `FILTER`가 나타나면 반복 호출 횟수를 점검하고, `VIEW`가 나타나면 중간 결과 카디널리티 추정치와 실제 처리 건수(A-Rows vs E-Rows)를 비교한다.
@@ -215,4 +216,7 @@ Query Optimizer는 단순화된 통계 모델과 독립성 가정에 기반하�
 3. **블록 간 상관관계 해소**:
    - 서로 다른 블록의 조건 간에 강한 상관관계가 존재한다면 `/*+ MERGE */` 힌트를 적용하거나 일반 조인 형태로 쿼리를 리팩토링하여 단일 블록 내에서 조인 순서가 결정되도록 유도한다.
 4. **힌트(Hint)의 보조적 활용**:
-   - 데이터 도메인 지식과 실제 모수를 파악하고 있는 엔지니어가 힌트(`PUSH_PRED`, `NO_PUSH_PRED`, `LEADING`)를 통해 Optimizer의 계산 오차를 보정하는 것은 안정적인 시스템 운영을 위해 유효한 방법이다.
+   - 데이터 도메인 지식과 실제 모수를 파악하고 있는 엔지니어가 힌트(`PUSH_PRED`, `NO_PUSH_PRED`, `LEADING`, `USE_HASH`)를 통해 Optimizer의 계산 오차를 보정하는 것은 안정적인 시스템 운영을 위해 유효한 방법이다.
+
+실제로 발주대상상품을 조회할 때, 행사정보 테이블을 Window Function을 이용해서 가장 최근 게시일자를 조회하는 서브쿼리에서 의도치 않은 플랜 변경이 발생해서 긴급 반영을 진행한 적이 있었다.
+대규모 프로모션 전 발주 기간임에도 불구하고 대행사코드, 소행사코드, 게시조건, 대상상품, 대상매장이라는 5개의 테이블에 대한 조인 조건이 예상 row를 적게 추산해서 Nested Loop가 발생해버린 것이다.
