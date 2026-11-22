@@ -141,10 +141,10 @@ packet-beta
 <p align="center"><em>Figure 3: (id=1001, name='APPLE', price=50000) 레코드의 실제 40바이트(8바이트 워드 정렬) UnsafeRow 메모리 주소 배치</em></p>
 
 1. [1] Null Bitmap 영역 (`+0B`, 8 Bytes): 각 컬럼이 `NULL`인지 여부를 1비트씩 기록한다.
-2. [2] 고정 8B Slot 영역 (`컬럼 수 * 8 Bytes`): 데이터 타입과 무관하게 모든 컬럼에 무조건 8바이트 고정 칸을 배정한다. 숫자(`id`, `price`)는 그 칸에 값을 바로 적고, 길이가 변하는 문자열(`name`)은 `[실제 글자가 적힌 뒤쪽 상대 위치(+32B) | 글자 길이(5)]` 정보만 8바이트 숫자로 압축해서 적는다.
+2. [2] 고정 8바이트 Slot 영역 (`컬럼 수 * 8 Bytes`): 데이터 타입과 무관하게 모든 컬럼에 무조건 8바이트 고정 칸을 배정한다. 숫자(`id`, `price`)는 그 칸에 값을 바로 적고, 길이가 변하는 문자열(`name`)은 `[실제 글자가 적힌 뒤쪽 상대 위치(+32B) | 글자 길이(5)]` 정보만 8바이트 숫자로 압축해서 적는다.
 3. [3] 가변 데이터 영역 (`+32B` 이후): 고정 칸들이 끝난 바로 뒷자리부터 `'APPLE'` 같은 실제 문자열 바이트를 이어서 기록한다.
 
-앞쪽 `[2]번 영역`의 모든 컬럼 칸 크기를 정확히 8바이트로 통일해 두었기 때문에, 몇 번째 컬럼이든 앞선 컬럼들을 파싱(Deserialization)할 필요 없이 `시작주소 + 8B + (컬럼순번 * 8B)`라는 단순 덧셈·곱셈만으로 정확한 메모리 위치를 `O(1)`에 찾아낼 수 있다.
+앞쪽 `[2]번 영역`의 모든 컬럼 칸 크기를 정확히 8바이트로 통일해 두었기 때문에, 몇 번째 컬럼이든 앞선 컬럼들을 파싱(Deserialization)할 필요 없이 `시작주소 + 8B + (컬럼순번 * 8B)`라는 단순 덧셈과 곱셈만으로 정확한 메모리 위치를 `O(1)`만으로 찾아낼 수 있다.
 
 ```java
 // Spark UnsafeRow가 Java 객체 생성 없이 2번째 컬럼(price)을 바로 읽어내는 코드
@@ -169,7 +169,7 @@ public long getLong(int ordinal) {
 일반 텍스트 파일(CSV, JSON)은 파일 안에 `1001,APPLE,50000`처럼 가로 행(Row) 순서대로 글자를 나열한다. 이 방식은 `price` 컬럼 하나만 합산하려고 해도 파일 전체의 `id`와 `name` 문자열까지 디스크에서 전부 읽어야 한다.
 반면 Parquet(Columnar 파일 포맷)는 데이터를 가로가 아닌 세로(컬럼)끼리 모아서 배열 형태로 저장한다.
 - 파일 내부에 `id` 값만 100만 개 연속으로 모아둔 구역(`Column Chunk`), `name`만 100만 개 모아둔 구역, `price`만 100만 개 모아둔 구역이 따로 분리되어 있다.
-- 또한 파일 맨 끝(`Footer`)에는 각 구역별 최솟값(`Min`)과 최댓값(`Max`) 통계가 적혀 있다. 덕분에 Spark가 Parquet 파일을 읽을 때는 쿼리에 필요한 컬럼 구역만 골라서 읽고(Column Projection), 조건에 맞지 않는 데이터 블록은 아예 건너뛰는(Skipping) 고속 스캔이 가능하다.
+- 또한 파일 맨 끝(`Footer`)에는 각 구역별 최솟값(`Min`)과 최댓값(`Max`) 통계가 적혀 있다. 덕분에 Spark가 Parquet 파일을 읽을 때는 쿼리에 필요한 컬럼 구역만 골라서 읽고(Column Projection), 조건에 맞지 않는 데이터 블록은 아예 건너뛰며 빠르게 스캔이 가능하다.
 
 ```mermaid
 sequenceDiagram
@@ -195,33 +195,31 @@ sequenceDiagram
 
 #### MapReduce: Rigid Map-Reduce 패러다임
 모든 비즈니스 로직을 반드시 `Map`과 `Reduce`라는 두 단계의 틀에 맞춰 쪼개야 한다. 복합 조인이나 다단계 집계를 수행하려면 여러 개의 MapReduce Job을 직렬로 연결해야 한다.
-이때 선행 Job이 끝나면 그 결과를 반드시 HDFS에 기록(3중 복제 네트워크 I/O 동반)하고, 후속 Job이 다시 HDFS에서 이를 읽어 들여야 한다. 연산 단계가 늘어날수록 중간 결과물의 Disk 및 네트워크 I/O 비용이 선형적으로 증가한다.
+이때 선행 Job이 끝나면 그 결과를 반드시 HDFS에 기록하는데 3중으로 복제 네트워크 I/O 동반되며 후속 Job이 다시 HDFS에서 이를 읽어 들여야 한다. 연산 단계가 늘어날수록 중간 결과물의 Disk 및 네트워크 I/O 비용이 선형적으로 증가한다.
 
 #### Spark: DAG 기반 Stage 분할과 Whole-Stage Code Generation
-Spark는 전체 연산을 DAG(Directed Acyclic Graph)로 구성한 뒤, 다른 노드의 데이터와 섞일(Shuffle) 필요가 없는 Narrow Dependency 연산(`map`, `filter`, `flatMap`, `project`)을 하나의 Stage로 묶는다.
-이후 Catalyst Optimizer의 Whole-Stage Code Generation이 동작하여, 여러 연산자의 함수 호출 과정을 없애고 런타임에 아래 코드처럼 단 하나의 `while` 루프 바이트코드로 합쳐 버린다(Operator Fusion).
+Spark는 전체 연산을 DAG로 구성한 뒤 다른 노드의 데이터와 섞일 필요가 없는 `Narrow Dependency 연산`(`map`, `filter`, `flatMap`, `project`)을 하나의 Stage로 묶는다.
+이후 Catalyst Optimizer의 Whole-Stage Code Generation이 동작하여 여러 연산자의 함수 호출 과정을 없애고 런타임에 아래 코드처럼 단 하나의 `while` loop Bytecode로 합쳐 버리는데 이를 `Operator Fusion`이라고 한다.
 
 ```java
-// Spark Whole-Stage CodeGen이 런타임에 생성하는 합성 루프 개념도
+// Spark Whole-Stage CodeGen의 Operator Fusion
 while (inputIterator.hasNext()) {
     UnsafeRow row = inputIterator.next();
     // 별도의 중간 컬렉션이나 버퍼에 적재하지 않고 CPU 레지스터/캐시 수준에서 즉시 통과
-    if (row.getLong(0) > 1000L) {               // Filter 1
+    if (row.getLong(0) > 1000L) {                // Filter 1
         long price = row.getLong(1) * 110 / 100; // Map 1
-        if (price >= 50000L) {                  // Filter 2
+        if (price >= 50000L) {                   // Filter 2
             shuffleWriter.write(row.getInt(2), price);
         }
     }
 }
 ```
 
-즉, Spark의 In-Memory Pipelining은 거대한 중간 테이블을 RAM에 쌓아두는 방식이 아니라, 단일 레코드가 CPU 캐시와 레지스터를 타고 Stage 끝단까지 멈추지 않고 흘러가는 Streaming 구조다. 사용자가 명시적으로 `.cache()`나 `.persist()`를 호출하지 않는 한 중간 결과 자체를 메모리에 적재하지 않는다.
-
+즉, Spark의 In-Memory Pipelining은 거대한 중간 결과를 메모리에 쌓아두는 방식이 아니라 단일 레코드가 CPU 캐시와 레지스터를 타고 Stage 단위로 중간에 멈추지 않고 한번에 처리하는 Streaming 구조다. 사용자가 명시적으로 `.cache()`나 `.persist()`를 호출하지 않는 한 중간 결과 자체를 메모리에 적재하지 않는다.
+하지만 `GROUP BY dept_no`나 `JOIN`처럼 여러 노드에 흩어진 데이터를 한곳으로 모아야 하는 `Wide Dependency` 구간에서는 Spark 또한 Local Disk에 Shuffle 파일을 기록한다.
 ---
 
 ### 2.2 Shuffle 메커니즘의 물리적 차이
-
-`GROUP BY dept_no`나 `JOIN`처럼 여러 노드에 흩어진 데이터를 한곳으로 모아야 하는 Wide Dependency 구간에서는 Spark 역시 네트워크 전송 전에 Local Disk에 Shuffle 파일을 기록한다.
 
 #### 배경 이해: '파티션 ID(Partition ID)'란 무엇이며 왜 자동으로 만들어지는가?
 분산 환경에서 10대의 서버가 각자 나눠 가진 데이터에 대해 `GROUP BY dept_no`(부서별 매출 합계)를 수행한다고 가정해 보자. 1번 서버에도 `'개발팀'` 매출이 있고, 2번 서버에도 `'개발팀'` 매출이 있다면, 최종 합계를 구하기 위해서는 모든 서버가 자신이 가진 `'개발팀'` 데이터를 반드시 다음 Stage의 동일한 Task(예: 3번 Task) 한 곳으로 몰아주어야 한다.
@@ -235,10 +233,10 @@ while (inputIterator.hasNext()) {
 이 목적지 번호(`Partition ID`)와 실제 데이터 값(`Key`)을 다루는 정렬 방식에서 MapReduce와 Spark의 차이가 갈린다.
 
 - MapReduce (목적지 번호 + 실제 Key 값까지 무조건 정렬):
-  Map Task는 출력 데이터를 `Partition ID`로 묶는 것에 그치지 않고, 각 파티션 내부의 실제 `Key` 값(예: 부서명 알파벳순)까지 무조건 정렬(QuickSort 후 MergeSort)하여 Disk에 쓴다. 단순 합계(`SUM`)만 구할 때도 불필요한 전체 Key 비교와 레코드 위치 교환 비용이 강제된다.
+  Map Task는 출력 데이터를 `Partition ID`로 묶는 것에 그치지 않고, 각 파티션 내부의 실제 `Key` 값(예: 부서명 알파벳순)까지 무조건 정렬(QuickSort -> MergeSort)하여 Disk에 쓴다. 단순 합계(`SUM`)만 구할 때도 불필요한 전체 Key 비교와 레코드 위치 교환 연산이 수행된다.
 - Spark (`Partition ID`별로만 분류 + `Tungsten Sort`의 8바이트 포인터 정렬):
-  Spark는 별도의 `ORDER BY` 요구가 없는 일반 Shuffle에서는 실제 `Key` 값 정렬을 생략하고, 자동 계산된 목적지 번호(`Partition ID`)가 같은 레코드끼리만 모아서 단일 데이터 파일과 인덱스 파일로 병합한다.
-  정렬이 필요한 경우에도 Spark의 `Tungsten Sort Shuffle`은 크기가 큰 실제 레코드 본문을 메모리에서 직접 복사·이동시키지 않는다. 대신 각 레코드마다 `[Partition ID (24bit) + 메모리 페이지 번호 (13bit) + 시작 위치 Offset (27bit)]`를 합친 8바이트짜리 숫자(포인터) 배열을 자동으로 만들고, 이 8바이트 포인터 배열만 정렬한다. 무거운 본문 데이터는 제자리에 둔 채 8바이트 주소록만 정렬하므로 CPU Cache Miss와 메모리 대역폭 소모가 현저히 적다.
+  Spark는 별도의 `ORDER BY` 요구가 없는 일반 Shuffle에서는 실제 `Key` 값 정렬을 생략하고 자동 계산된 목적지 번호(`Partition ID`)가 같은 레코드끼리만 모아서 단일 데이터 파일과 인덱스 파일로 병합한다.
+  또한, 정렬이 필요한 경우에도 Spark의 `Tungsten Sort Shuffle`은 크기가 큰 실제 레코드를 메모리에서 직접 복사 및 이동시키지 않는다. 대신 각 레코드마다 `[Partition ID (24bit) + 메모리 페이지 번호 (13bit) + 시작 위치 Offset (27bit)]`를 합친 8바이트짜리 포인터 배열을 자동으로 만든 후 정렬한다. 크기가 큰 레코드 데이터는 제자리에 둔 채 8바이트 주소록만 정렬하므로 CPU Cache Miss와 메모리 대역폭 소모가 현저히 적다.
 
 ---
 
@@ -261,23 +259,24 @@ Spark가 MapReduce의 한계를 극복하고 빅데이터 표준 엔진으로 �
 
 1. 대규모 조인(JOIN)과 집계(Aggregation)에서의 메모리 한계와 중단 위험:
    - 일반 단순 조회는 각 워커 노드가 자기 디스크에 있는 데이터만 읽어서 필터링한 뒤 바로 결과를 내면 되므로 노드 간 데이터 이동(Shuffle)이 거의 없다. 이 영역에서는 C++ SIMD와 전용 인덱스를 가진 ClickHouse나 Snowflake가 압도적으로 빠르다.
-   - 하지만 수십 테라바이트짜리 두 테이블을 `JOIN`하거나 높은 카디널리티 컬럼(예: 수억 명의 `user_id`)으로 `GROUP BY`를 수행할 때는, 모든 노드가 네트워크로 데이터를 교차 전송(Shuffle)하고 메모리에 거대한 해시 테이블(Hash Table)을 지어야 한다.
+   - 하지만 수십 테라바이트짜리 두 테이블을 `JOIN`하거나 높은 카디널리티 컬럼(예: 수억 명의 고유한 `user_id`)으로 `GROUP BY`를 수행할 때는, 모든 노드가 네트워크로 데이터를 교차 전송(Shuffle)하고 메모리에 거대한 해시 테이블(Hash Table)을 지어야 한다.
    - ClickHouse 같은 실시간 OLAP DB는 속도를 위해 조인 대상 테이블과 집계 해시 테이블을 인메모리에 올리도록 설계되어 있어, 대용량 테이블 간 조인 시 메모리 제한(OOM)에 걸려 쿼리 자체가 죽어버리는 일이 빈번하다. Snowflake 역시 중간 결과를 디스크에 체크포인트하지 않고 메모리 스트리밍으로 넘기다가 메모리가 부족해지면 원격 스토리지(S3)로 Spill되면서 속도가 급격히 떨어지거나, 1시간짜리 배치 도중 노드 1대만 문제가 생겨도 쿼리 전체를 처음부터 다시 돌려야 한다.
    - 반면 Spark는 처음부터 메모리가 부족하면 로컬 디스크로 안전하게 데이터를 내려쓰며 정렬·병합하는 외부 정렬 병합 조인(External Sort-Merge Join)과 단계별 Shuffle 파일 영속화를 기본으로 설계했다. 덕분에 시간이 조금 더 걸리더라도 수십 테라바이트의 다단계 조인과 집계를 실패 없이 끝까지 완주해 낸다.
 2. SQL을 넘어선 범용 프로그래밍과 단일 통합 파이프라인:
-   Snowflake나 ClickHouse는 정형화된 테이블에 대해 SQL로 조회하는 데 국한된다. 반면 실무 데이터 엔지니어링에서는 비정형 텍스트·이미지·복잡한 중첩 JSON 로그를 코드로 파싱하거나, 외부 API를 호출하고, 머신러닝(ML) 피처 엔지니어링을 수행해야 한다. Spark는 하나의 엔진에서 대규모 ETL, 스트리밍 처리, ML/AI 파이프라인을 Python/Scala 코드로 자유롭게 구현할 수 있다.
+   Snowflake나 ClickHouse는 `정형화된 테이블`에 대해 SQL로 조회하는 데 국한된다. 반면 실무 데이터 엔지니어링에서는 비정형 텍스트·이미지·복잡한 중첩 JSON 로그를 코드로 파싱하거나, 외부 API를 호출하고, 머신러닝(ML) 피처 엔지니어링을 수행해야 한다. Spark는 하나의 엔진에서 대규모 ETL, 스트리밍 처리, ML/AI 파이프라인을 Python/Scala 코드로 자유롭게 구현할 수 있다.
 
 #### (3) Spark 생태계의 약점 보완: Delta Lake / Apache Iceberg와 Photon / Apache Gluten
 최근 Databricks와 오픈소스 진영은 앞서 살펴본 Spark의 두 가지 약점(스토리지 메타데이터 부재, JVM Row 연산 한계)을 다음 두 가지 기술로 정면 돌파하며 분산 분석 DB의 장점까지 흡수하고 있다.
 
 1. 스토리지 한계 보완 (`Delta Lake` / `Apache Iceberg` 테이블 포맷):
    - 기존 생(Raw) Parquet 방식의 문제는 S3에 흩어진 수만 개의 Parquet 파일 중 어느 파일에 내가 찾는 데이터가 있는지 알려주는 '전체 목차(전역 인덱스)'가 없다는 점이었다.
-   - `Delta Lake`와 `Apache Iceberg`는 실제 데이터는 그대로 Parquet 파일로 두되, 그 위에 전체 파일들의 목록과 각 파일별 컬럼 `Min/Max` 통계, 스냅샷 버전을 한곳에 요약해 놓은 별도의 메타데이터 계층(Delta의 `_delta_log`, Iceberg의 `Manifest File` 트리)을 얹은 테이블 포맷이다.
-   - 덕분에 Spark는 수만 개의 Parquet 파일을 일일이 열어보지 않고, 맨 앞의 작은 메타데이터(Manifest) 파일만 읽어서 조건에 맞는 Parquet 파일 몇 개만 수 밀리초 만에 골라낸다(File-level Pruning). 또한 일반 파일 시스템에서는 불가능했던 DB 수준의 ACID 트랜잭션(`UPDATE`, `DELETE`, `MERGE`)과 과거 시점 조회(Time Travel)까지 가능해졌다.
+   - `Delta Lake`와 `Apache Iceberg`는 실제 데이터는 그대로 Parquet 파일로 두되, 그 위에 전체 파일들의 목록과 각 파일별 컬럼 `Min/Max` 통계, 스냅샷 버전을 한곳에 요약해 놓은 별도의 메타데이터 계층을 구성한 테이블 포맷이다. (Delta의 `_delta_log`, Iceberg의 `Manifest File` 트리)
+   - 덕분에 Spark는 수만 개의 Parquet 파일을 일일이 열어보지 않고, 맨 앞의 작은 메타데이터 파일만 읽어서 조건에 맞는 Parquet 파일 몇 개만 수 밀리초 만에 골라내는데 이를 `File-level Pruning`이라고 부른다. 
+   - 테이블 포맷으로 구성해뒀기 때문에 일반 파일 시스템에서는 불가능했던 DB 수준의 ACID 트랜잭션(`UPDATE`, `DELETE`, `MERGE`)과 과거 시점 조회(Time Travel)까지 가능해졌다.
 2. 연산 엔진 한계 보완 (`Databricks Photon` / 오픈소스 `Apache Gluten`):
-   - 기존 Spark는 쿼리 실행 계획을 세우는 두뇌(Catalyst Optimizer)뿐만 아니라 실제 데이터를 읽고 계산하는 근육(물리 연산자)도 모두 JVM 위의 Scala/Java 코드(`UnsafeRow` 1행씩 루프 처리)로 돌아갔다.
-   - `Databricks Photon`(상용)과 `Apache Gluten`(오픈소스 플러그인)은 Spark의 두뇌(코드 호환성, 스케줄링, 장애 복구)는 그대로 유지한 채, 실제 데이터를 계산하는 물리 실행 엔진만 Snowflake·ClickHouse와 똑같은 C++ Columnar Vectorized(SIMD) 엔진으로 교체한 아키텍처다.
-   - 상용 Databricks 환경에서는 자체 개발한 C++ `Photon` 엔진이 작동하며, 오픈소스 Spark 환경에서는 `Apache Gluten` 플러그인을 장착해 연산 작업을 JNI(Java Native Interface)를 통해 Meta가 개발한 C++ `Velox` 엔진이나 `ClickHouse` 코어 엔진으로 위임(Offloading)한다. 이로써 Spark의 안정성과 C++ 분산 분석 DB의 연산 속도를 동시에 얻는 구조로 진화했다.
+   - 기존 Spark는 쿼리 실행 계획을 수행하는 Catalyst Optimizer뿐만 아니라 실제 데이터를 읽고 계산하는 물리 연산도 모두 JVM 위의 Scala/Java 코드에서 `UnsafeRow` 매핑 객체로 1행씩 루프 처리를 수행했다.
+   - `Databricks Photon`(상용)과 `Apache Gluten`(오픈소스 플러그인)은 Spark의 코드 호환성, 스케줄링, 장애 복구에 대한 기능은 그대로 유지한 채 실제 데이터를 계산하는 물리 실행 엔진을 Snowflake, ClickHouse와 동일한 C++ Columnar Vectorized(SIMD) 엔진으로 교체한 아키텍처다.
+   - 상용 Databricks 환경에서는 자체 개발한 C++ `Photon` 엔진이 작동하며, 오픈소스 Spark 환경에서는 `Apache Gluten` 플러그인을 장착해 연산 작업을 JNI(Java Native Interface)를 통해 Meta가 개발한 C++ `Velox` 엔진이나 `ClickHouse` 코어 엔진으로 위임 처리(Offloading) 한다. 이로써 Spark의 안정성과 C++ 분산 분석 DB의 연산 속도를 동시에 얻는 구조로 진화했다.
 
 ---
 
@@ -293,27 +292,22 @@ Spark가 MapReduce의 한계를 극복하고 빅데이터 표준 엔진으로 �
 | 노드 장애 시 복구 | 실패한 Stage의 해당 Task만 부분 재실행 | 쿼리 전체 재실행 | 쿼리 전체 실패 후 재시도 |
 
 ```mermaid
-flowchart LR
+sequenceDiagram
+    participant Storage as 스토리지<br/>(Parquet / Micro-partition / MergeTree)
+    participant Engine as 실행 엔진<br/>(JVM UnsafeRow / C++ SIMD)
+    participant Transfer as Stage 간 전달<br/>(Local Disk / In-Memory)
 
-    subgraph SPARK_ENG ["Spark 기본 엔진: Row 변환 및 Disk Shuffle 보장"]
-        direction LR
-        S_PARQ[("Parquet File<br/>Columnar")]
-        S_ROW["UnsafeRow 변환<br/>Row 단위 루프 연산"]
-        S_DISK[("Local Disk Shuffle<br/>Stage 체크포인트")]
-        S_PARQ -->|"ColumnarToRow"| S_ROW
-        S_ROW -->|"Fault Tolerance 보장"| S_DISK
-    end
-
-    subgraph MPP_ENG ["Snowflake / ClickHouse: C++ Columnar Vectorized & SIMD"]
-        direction LR
-        M_COL[("Columnar Storage<br/>Micro-partition / MergeTree")]
-        M_VEC["C++ Column Vector Batch<br/>1024-4096개 배열 일괄 SIMD 연산"]
-        M_NET(["In-Memory Exchange<br/>노드 간 직접 스트리밍"])
-        M_COL -->|"무변환 배열 로드"| M_VEC
-        M_VEC -->|"Disk 기록 생략"| M_NET
+    alt 1. Spark 기본 엔진 (Row 변환 및 Disk Shuffle 체크포인트)
+        Storage->>Engine: Parquet Columnar 파일 스캔
+        Note over Engine: ColumnarToRow 변환 -> UnsafeRow 1행씩 스칼라 루프 연산
+        Engine->>Transfer: Local Disk에 Shuffle 파일 영속화 (노드 장애 시 부분 복구 보장)
+    else 2. Snowflake / ClickHouse (C++ Columnar Vectorized & 메모리 스트리밍)
+        Storage->>Engine: 컬럼 배열 무변환 로드 (1,024-4,096개 Vector Batch)
+        Note over Engine: Row 변환 생략 -> C++ SIMD 명령어로 1클럭당 16개 원소 동시 연산
+        Engine->>Transfer: Disk 기록 생략 -> 네트워크 소켓으로 다음 노드 메모리에 직접 스트리밍
     end
 ```
-<p align="center"><em>Figure 5: Spark의 Row 중심 안전 파이프라인과 분산 분석 DB(Snowflake/ClickHouse)의 C++ Columnar Vectorized 파이프라인 비교</em></p>
+<p align="center"><em>Figure 5: Spark의 Row 중심 안전 파이프라인과 분산 분석 DB(Snowflake/ClickHouse)의 C++ Columnar Vectorized 파이프라인 시퀀스 비교</em></p>
 
 #### Parquet 파일 스캔 이후 Spark의 `ColumnarToRow` 변환 과정
 
