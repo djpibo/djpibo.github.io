@@ -245,6 +245,7 @@ while (inputIterator.hasNext()) {
 
 즉, Spark의 In-Memory Pipelining은 거대한 중간 결과를 메모리에 쌓아두는 방식이 아니라 단일 레코드가 CPU 캐시와 레지스터를 타고 Stage 단위로 중간에 멈추지 않고 한번에 처리하는 Streaming 구조다. 사용자가 명시적으로 `.cache()`나 `.persist()`를 호출하지 않는 한 중간 결과 자체를 메모리에 적재하지 않는다.
 하지만 `GROUP BY dept_no`나 `JOIN`처럼 여러 노드에 흩어진 데이터를 한곳으로 모아야 하는 `Wide Dependency` 구간에서는 Spark 또한 Local Disk에 Shuffle 파일을 기록한다.
+
 ---
 
 ### 2.2 Shuffle 메커니즘의 물리적 차이
@@ -442,6 +443,7 @@ sequenceDiagram
 
 3. 메모리 한계 극복 (Out-of-Core 처리):
    서버 메모리가 64GB인데 조인해야 할 중간 데이터가 200GB로 불어나는 상황에서도 차이가 난다. 인메모리 처리에 의존하는 DB들은 이때 `OutOfMemory(OOM)` 에러를 뱉고 멈추지만, Spark는 200GB든 10TB든 로컬 디스크의 Shuffle 파일로 나누어 기록하고 디스크에 정렬된 파일을 조금씩 스트리밍으로 읽어 병합(`Sort-Merge Join`)하므로 메모리보다 훨씬 큰 데이터도 처리가 가능하다.
+
 ---
 
 ## 4. Columnar Vectorized 실행 엔진과 하드웨어 SIMD 내부 원리
