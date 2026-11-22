@@ -88,65 +88,42 @@ DDL 작업(테이블이나 인덱스의 컬럼 변경, 인덱스 리빌드 등)�
 30분마다 동작하는 센터재고이동 배치는 전국의 물류 거점 센터 코드를 파라미터(`:center_cd`)로 받아 해당 센터의 실시간 재고와 재고 이동 데이터를 결합하여 처리한다.
 
 ### 2.1. 비즈니스 도메인의 데이터 편차(Skew)
-전국 물류망은 거점의 규모 그리고 발주 시즌의 이전 배치 수행 후의 데이터 처리량의 격차가 극심하게 발생한다.
+발주 시즌 때, 이전 배치 수행 후의 데이터 처리량의 격차가 극심하게 발생한다.
 
 ```
-[ 물류 거점 유형별 30분당 재고이동 발생량 ]
-- 수도권 메가 허브 센터 (HUB_01) : 30분당 약 150,000건 발생 (전체 물동량의 85%)
-- 지역 도심형 소형 MFC (MFC_24) : 30분당 약 30건 발생 (긴급 보충분 소량)
-```
-
-```sql
--- [문제의 센터재고이동 배치 집계 SQL]
-SELECT /*+ GATHER_PLAN_STATISTICS */
-       i.center_cd,
-       i.item_cd,
-       i.current_qty,
-       m.move_qty,
-       m.dest_center_cd,
-       i.allocated_qty
-  FROM tb_center_inventory i
-  JOIN tb_inventory_move_order m
-    ON i.center_cd = m.src_center_cd
-   AND i.item_cd   = m.item_cd
- WHERE i.center_cd = :center_cd
-   AND m.move_status = 'READY'
-   AND m.order_date  = TRUNC(SYSDATE);
+[ 발주 시즌 센터당 평균 재고 이동 발생량의 편차 ]
+- 평시 수행 : 30분당 약 30건 발생
+- 이전 배치 수행 후 : 30분당 약 150,000건 발생 
 ```
 
 ### 2.2. 플랜 왜곡 발생 메커니즘
-장애가 발생한 날 새벽, Shared Pool에서 해당 SQL의 커서가 Aging Out된 상태였다.  
-이 시점에 배치가 실행되면서 알파벳 순서에 의해 지역 소형 거점인 `MFC_24` 파라미터가 가장 먼저 하드 파싱 단계로 진입했다.
+장애가 발생한 날 Shared Pool에서 해당 SQL의 커서가 Aging Out된 상태였다.  
+이 시점에 평시 데이터(30건) 구간에서 배치가 먼저 실행되면서 소량 조건으로 하드 파싱이 수행되었고, 이어진 발주 시즌(수주배분 배치 직후 15만 건) 구간에서도 동일한 플랜을 그대로 재사용하게 되었다.
 
 ```mermaid
-flowchart LR
+sequenceDiagram
+    participant App as 배치 애플리케이션
+    participant Cache as Library Cache (Shared Pool)
+    participant CBO as Oracle CBO
 
-    subgraph Timeline["1. 첫 번째 실행 (MFC_24 소형 거점)"]
-        direction TB
-        P1["바인드 변수: :center_cd = 'MFC_24'"]
-        HP1["Hard Parse + Bind Peeking<br/><b>E-Rows: 30건 추정</b>"]
-        PLAN1["Plan Hash: 11223344<br/><b>Index Scan + Nested Loop Join</b><br/>수행시간: 0.05초 (Buffer: 42)"]
-        P1 --> HP1 --> PLAN1
-    end
+    Note over App,Cache: 1. 평시 / 소량 구간 먼저 실행 (처리 대상 30건)
+    App->>Cache: SQL 실행 요청 (실제 대상: 30건)
+    Cache->>CBO: 캐시 미스 -> Hard Parse + Bind Peeking (E-Rows: 30건 추정)
+    CBO->>Cache: Plan Hash 11223344 (Index Scan + NL Join) 캐싱 (0.05초, Buffer 42)
 
-    subgraph Execution["2. 두 번째 실행 (HUB_01 메가 허브)"]
-        direction TB
-        P2["바인드 변수: :center_cd = 'HUB_01'"]
-        SP2["Soft Parse (Library Cache 적재본 재사용)<br/><b>기존 11223344 플랜 강제 적용</b>"]
-        PLAN2["<b>실제 처리: A-Rows 150,000건</b><br/>NL Join 반복 루프 15만 회<br/>단건 Random Access 폭증<br/><b>수행시간: 28분 42초 (Buffer: 15,280,000)</b>"]
-        P2 --> SP2 --> PLAN2
-    end
-
-    PLAN1 -.->|"Plan Hash: 11223344 캐싱"| SP2
+    Note over App,Cache: 2. 발주 시즌 / 수주배분 직후 실행 (처리 대상 150,000건)
+    App->>Cache: 동일 SQL 실행 요청 (실제 대상: 150,000건)
+    Cache-->>App: Soft Parse로 기존 11223344 플랜(NL Join) 강제 재사용
+    Note over App: NL Join 루프 15만 회 -> 28분 42초 지연 (Buffer: 15,280,000)
 ```
-<p align="center"><em>Figure 2: Bind Peeking에 의해 소형 거점 전용 플랜이 메가 허브 대용량 처리에 오염 적용되는 메커니즘</em></p>
+<p align="center"><em>Figure 2: Bind Peeking에 의해 평시 소량 전용 플랜이 발주 시즌 대용량 처리에 오염 적용되는 시퀀스</em></p>
 
-1. **소형 거점(`MFC_24`) Hard Parse**:
-   - 옵티마이저가 Bind Peeking으로 `MFC_24`를 확인하고 반환 행 수를 30건으로 계산했다.
+1. **평시 소량 구간 Hard Parse**:
+   - 옵티마이저가 Bind Peeking으로 평시 조건을 확인하고 반환 행 수를 30건으로 계산했다.
    - 30건에 대해서는 테이블 전체를 읽는 것보다 `tb_center_inventory`의 인덱스를 경유해 건건이 `tb_inventory_move_order`를 `Nested Loop Join`하는 경로가 가장 저렴했다.
    - Plan Hash Value `11223344`가 생성되어 Shared Pool에 캐싱되었다.
-2. **메가 허브(`HUB_01`) Soft Parse 및 왜곡 실행**:
-   - 곧이어 대규모 이동 지시 150,000건을 처리하는 `HUB_01` 작업이 동일한 SQL을 호출했다.
+2. **발주 시즌(수주배분 배치 직후) Soft Parse 및 왜곡 실행**:
+   - 곧이어 발주 시즌 대규모 이동 지시 150,000건을 처리해야 하는 배치가 동일한 SQL을 호출했다.
    - 새로운 Hard Parse를 하지 않고 Shared Pool에 캐싱된 Plan Hash `11223344`(`Nested Loop Join`)를 그대로 가져왔다.
    - 드라이빙 테이블에서 읽은 150,000건에 대해 조인 대상 테이블을 15만 번 반복 탐색하며 `db file sequential read` Single Block I/O가 쉼 없이 발생했다.
 
@@ -387,7 +364,7 @@ SELECT /*+ LEADING(m i) USE_HASH(i) FULL(m) FULL(i) SWAP_JOIN_INPUTS(i) */
    AND m.order_date  = TRUNC(SYSDATE);
 ```
 
-이와 같이 완결된 힌트 세트를 주입하면, 향후 커서가 Hard Parse를 거치거나 소형 거점 파라미터가 최초 인입되더라도 CBO는 Bind Peeking에 휘둘리지 않고 항상 대용량에도 안전한 `Hash Join` 경로를 선택한다.
+이와 같이 완결된 힌트 세트를 주입하면, 향후 커서가 Hard Parse를 거치거나 평시 소량 데이터 파라미터가 최초 인입되더라도 CBO는 Bind Peeking에 휘둘리지 않고 항상 대용량에도 안전한 `Hash Join` 경로를 선택한다.
 
 ---
 
@@ -398,68 +375,59 @@ SELECT /*+ LEADING(m i) USE_HASH(i) FULL(m) FULL(i) SWAP_JOIN_INPUTS(i) */
 
 ```
 [ 비즈니스 관점의 근본 모순 ]
-- 수십 건만 처리하는 '소형 거점'에게는 Index Range Scan + NL Join이 가장 빠르다 (0.05초 소요).
-- 15만 건을 처리하는 '메가 허브'에게는 Full Table Scan + Hash Join이 가장 빠르다 (1분 30초 소요).
-- 극단적으로 다른 두 가지 비즈니스 성격의 워크로드를 "단 하나의 동일 SQL"로 바인드 처리하려 한 것이 문제의 본질이다.
+- 평시(수십 건만 처리하는 구간)에는 Index Range Scan + NL Join이 가장 빠르다 (0.05초 소요).
+- 발주 시즌(수주배분 직후 등 15만 건을 처리하는 구간)에는 Full Table Scan + Hash Join이 가장 빠르다 (1분 30초 소요).
+- 극단적으로 다른 두 가지 시점의 워크로드를 "단 하나의 동일 SQL"로 바인드 처리하려 한 것이 문제의 본질이다.
 ```
 
-대용량 처리에 맞추어 `FULL + USE_HASH` 힌트를 강제하면, 소형 거점 작업 역시 30건을 읽기 위해 수십만 블록의 테이블을 불필요하게 스캔하는 오버헤드를 짊어져야 한다.
+대용량 처리에 맞추어 `FULL + USE_HASH` 힌트를 강제하면, 평시 소량 구간 작업 역시 30건을 읽기 위해 수십만 블록의 테이블을 불필요하게 스캔하는 오버헤드를 짊어져야 한다.
 
-### 5.1. 센터 규모별 파이프라인 및 쿼리 분기 처리
-애플리케이션 아키텍처 레벨에서 거점의 규모를 기준으로 처리 경로를 물리적으로 분리한다.
+### 5.1. 처리 데이터 규모별 파이프라인 및 쿼리 분기 처리
+애플리케이션 아키텍처 레벨에서 실행 시점의 처리 대상 건수(평시 소량 vs 발주 시즌 대량)를 기준으로 처리 경로를 물리적으로 분리한다.
 
 ```mermaid
-flowchart LR
+flowchart TD
+    DISPATCH{{"배치 실행 시점 대상 건수 판별<br/>(평시 소량 vs 발주 시즌 대량)"}}
 
-    subgraph BatchApp["배치 라우팅 컨트롤러"]
-        DISPATCH{{"센터 유형 판별<br/>(HUB vs SUB)"}}
-    end
+    HUB_SQL["대량 전용 SQL<br/>Hash Join + Parallel/Direct Path<br/>(발주 시즌 대용량 일괄 처리)"]
+    SUB_SQL["소량 전용 SQL<br/>Index Range Scan + NL Join<br/>(평시 단건 고속 탐색)"]
 
-    subgraph HubPipeline["대용량 허브 전용 파이프라인"]
-        HUB_SQL["허브 전용 SQL<br/><b>Hash Join + Parallel/Direct Path</b><br/>(대용량 집합 일괄 처리)"]
-    end
+    HUB_PLAN[("Plan A: Hash Join<br/>소요: 1분 10초")]
+    SUB_PLAN[("Plan B: NL Join<br/>소요: 0.02초")]
 
-    subgraph SubPipeline["소형 거점 전용 파이프라인"]
-        SUB_SQL["소형 거점 전용 SQL<br/><b>Index Range Scan + NL Join</b><br/>(단건 고속 탐색)"]
-    end
-
-    subgraph Database["Oracle DB 엔진"]
-        HUB_PLAN[("Plan A: Hash Join<br/>소요: 1분 10초")]
-        SUB_PLAN[("Plan B: NL Join<br/>소요: 0.02초")]
-    end
-
-    DISPATCH -->|"센터코드: HUB_*"| HUB_SQL --> HUB_PLAN
-    DISPATCH -->|"센터코드: MFC_*"| SUB_SQL --> SUB_PLAN
+    DISPATCH -->|"발주 시즌 / 대량 (1,000건 이상)"| HUB_SQL --> HUB_PLAN
+    DISPATCH -->|"평시 / 소량 (1,000건 미만)"| SUB_SQL --> SUB_PLAN
 ```
-<p align="center"><em>Figure 4: 센터 규모에 따른 워크로드 격리 및 독립 Execution Plan 라우팅 아키텍처</em></p>
+<p align="center"><em>Figure 4: 평시와 발주 시즌 데이터 규모에 따른 워크로드 격리 및 독립 Execution Plan 라우팅 아키텍처</em></p>
 
 #### Java 애플리케이션 레벨 분기 구현
 ```java
 public List<InventoryMoveDto> fetchInventoryMoveList(String centerCd) {
-    CenterType centerType = centerRepository.findCenterType(centerCd);
-    
-    if (centerType == CenterType.MEGA_HUB) {
-        // 대용량 전용 쿼리: Full Scan + Hash Join 최적화
-        return inventoryQueryRepository.findHubCenterMoves(centerCd);
+    // 사전 건수 체크(또는 발주 시즌/수주배분 직후 플래그)로 대량 처리 여부 판별
+    long pendingCount = inventoryQueryRepository.countReadyMoveOrders(centerCd);
+
+    if (pendingCount >= 1_000L) {
+        // 발주 시즌 대량 전용 쿼리: Full Scan + Hash Join 최적화
+        return inventoryQueryRepository.findBulkCenterMoves(centerCd);
     } else {
-        // 소량 거점 전용 쿼리: Index Scan + NL Join 최적화
-        return inventoryQueryRepository.findSubCenterMoves(centerCd);
+        // 평시 소량 전용 쿼리: Index Scan + NL Join 최적화
+        return inventoryQueryRepository.findNormalCenterMoves(centerCd);
     }
 }
 ```
 
 #### SQL 레벨의 인라인 조건 분기 기법 (단일 쿼리 유지 시)
-만약 애플리케이션 코드를 분기할 수 없는 제약이 있다면, `UNION ALL`을 통해 데이터 특성에 따라 서로 다른 인덱스와 플랜을 타도록 SQL을 논리적으로 분리한다.
+만약 애플리케이션 코드를 분기할 수 없는 제약이 있다면, 대량 구간 여부 파라미터(`:is_peak_season`)와 `UNION ALL`을 통해 데이터 규모에 따라 서로 다른 인덱스와 플랜을 타도록 SQL을 논리적으로 분리한다.
 
 ```sql
--- [근본 개선: 센터 유형별 최적 플랜 격리 쿼리]
+-- [근본 개선: 평시/발주 시즌별 최적 플랜 격리 쿼리]
 SELECT /*+ LEADING(m i) USE_HASH(i) FULL(m) FULL(i) */
        i.center_cd, i.item_cd, i.current_qty, m.move_qty, m.dest_center_cd, i.allocated_qty
   FROM tb_center_inventory i
   JOIN tb_inventory_move_order m
     ON i.center_cd = m.src_center_cd AND i.item_cd = m.item_cd
  WHERE i.center_cd = :center_cd
-   AND :center_cd IN ('HUB_01', 'HUB_02', 'HUB_03') -- 메가 허브 센터 그룹
+   AND :is_peak_season = 'Y' -- 발주 시즌 / 수주배분 직후 대량 구간
    AND m.move_status = 'READY'
    AND m.order_date  = TRUNC(SYSDATE)
 UNION ALL
@@ -469,14 +437,14 @@ SELECT /*+ LEADING(i m) USE_NL(m) INDEX(i IX_CENTER_INV_01) INDEX(m IX_INV_MOVE_
   JOIN tb_inventory_move_order m
     ON i.center_cd = m.src_center_cd AND i.item_cd = m.item_cd
  WHERE i.center_cd = :center_cd
-   AND :center_cd NOT IN ('HUB_01', 'HUB_02', 'HUB_03') -- 일반 소형 거점 그룹
+   AND :is_peak_season = 'N' -- 평시 소량 구간
    AND m.move_status = 'READY'
    AND m.order_date  = TRUNC(SYSDATE);
 ```
 
 이와 같이 쿼리를 분리하면:
-- 메가 허브 실행 시 첫 번째 블록만 수행되며 `Hash Join`으로 대용량 데이터를 고속 처리한다.
-- 소형 거점 실행 시 두 번째 블록만 수행되며 단 42개 블록만 읽고 0.02초 만에 작업을 끝낸다.
+- 발주 시즌 대량 구간 실행 시 첫 번째 블록만 수행되며 `Hash Join`으로 대용량 데이터를 고속 처리한다.
+- 평시 소량 구간 실행 시 두 번째 블록만 수행되며 단 42개 블록만 읽고 0.02초 만에 작업을 끝낸다.
 - 바인드 변수가 어떤 순서로 들어오든 상관없이, 서로 다른 `UNION ALL` 브랜치에서 독립된 Execution Plan을 타므로 플랜 상호 오염이 원천 차단된다.
 
 ### 5.2. SPM Baseline 안전 삭제
@@ -518,7 +486,7 @@ flowchart LR
 
     subgraph StepC["3단계: 근본 아키텍처 리팩토링 (격리)"]
         C1["데이터 Skew 도메인 분리"]
-        C2["센터 규모별 파이프라인 분기<br/>SPM 베이스라인 해제"]
+        C2["데이터 규모별 파이프라인 분기<br/>SPM 베이스라인 해제"]
         C1 --> C2
     end
 
@@ -533,7 +501,7 @@ flowchart LR
 | :--- | :--- | :---: | :---: | :--- |
 | **1단계 (긴급)** | **SPM Baseline 고정** | 5분 | 임시 | 애플리케이션 수정 없이 즉각 장애 진화. 단, DB 관리 부채 증가 및 스키마 변경 시 둔감 |
 | **2단계 (안정화)** | **Outline Data 힌트 세트** | 1~2일 | 중기 | 소스 코드 형상에 고정하여 CBO 변동성 차단. 단, 데이터 볼륨 변동 시 힌트가 부채화 |
-| **3단계 (근본)** | **워크로드/쿼리 물리 격리** | 1~2주 | 영구 | 소형/대형 거점 모두 최적 경로 자율 확보. 초기 분석 및 애플리케이션 리팩토링 비용 수반 |
+| **3단계 (근본)** | **워크로드/쿼리 물리 격리** | 1~2주 | 영구 | 평시/발주 시즌 모두 최적 경로 자율 확보. 초기 분석 및 애플리케이션 리팩토링 비용 수반 |
 
 1. **긴급 상황에서는 원인 파악과 인프라 통제가 우선이다**:  
    배치가 연쇄 지연되어 시스템 전체 락 경합으로 번질 위기에서는, 코드 배포를 기다리지 않고 데이터베이스 엔진 레벨에서 검증된 플랜을 강제하는 SPM이 가장 확실한 방어선이다.
