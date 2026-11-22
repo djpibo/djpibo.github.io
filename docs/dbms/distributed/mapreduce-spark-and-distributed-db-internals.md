@@ -1,6 +1,6 @@
 ---
 id: mapreduce-spark-and-distributed-db-internals
-title: "MapReduce vs Spark, 그리고 분산 분석 DB(Snowflake, ClickHouse) vs 실시간 트랜잭션에 유리한 Document OLTP(MongoDB)의 내부 메커니즘 비교"
+title: "MapReduce vs Spark, 그리고 분산 분석 DB(Snowflake, ClickHouse, BigQuery) vs Document OLTP(MongoDB) 내부 메커니즘 비교"
 sidebar_label: MapReduce·Spark·MPP·MongoDB 비교
 sidebar_position: 1
 date: "2026년 11월 14일"
@@ -174,28 +174,29 @@ public long getLong(int ordinal) {
 {"id": 1003, "name": "APPLE",  "price": 70000}
 ```
 
-반면 Parquet(Columnar 바이너리 파일 포맷)는 위 3건의 데이터를 가로가 아닌 세로(컬럼)끼리 모아서 압축된 블록 단위로 저장한다. 실제 바이너리 파일 내부의 논리적 배치를 풀어서 표현하면 다음과 같다.
+반면 Parquet(Columnar 바이너리 파일 포맷)는 위 3건의 데이터를 가로가 아닌 세로(컬럼)끼리 모아서 압축된 블록 단위로 저장한다. 실제 바이너리 파일 내부의 바이트 오프셋 배치를 풀어서 표현하면 다음과 같다.
 
-```text title="orders.parquet (Columnar 바이너리 내부 구조: 컬럼별 분리 + 하단 Footer 통계)"
-[Header] PAR1 (4-Byte Magic Number)
-
-[Row Group 0] (보통 128MB 단위 가로 블록)
-  ├─ Column Chunk 0 (id: INT64)      : [1001, 1002, 1003]              (Delta Encoding)
-  ├─ Column Chunk 1 (name: BYTE_ARR) : Dict={0:"APPLE", 1:"BANANA"}
-  │                                    Values=[0, 1, 0]                (Dictionary + RLE 압축)
-  └─ Column Chunk 2 (price: INT64)   : [50000, 30000, 70000]           (OFFSET: +104B)
-
-[File Footer (메타데이터)]
-  ├─ Schema: { id: INT64, name: STRING, price: INT64 }
-  └─ Row Group 0 Statistics:
-       ├─ id    : min=1001,  max=1003,  null_count=0
-       ├─ name  : min="APPLE", max="BANANA", null_count=0
-       └─ price : min=30000, max=70000, null_count=0, file_offset=104B
-
-[Footer Length (4B)] [PAR1]
+```mermaid
+---
+config:
+  packet:
+    bitsPerRow: 16
+    bitWidth: 40
+    rowHeight: 46
+---
+packet-beta
+  title orders.parquet Physical Byte Layout (Total 72 Bytes Example)
+  0-3: "PAR1 (4B)"
+  4-15: "RG0 Col 0 (id: INT64): [1001, 1002, 1003] (Delta)"
+  16-31: "RG0 Col 1 (name): Dict={0:APPLE, 1:BANANA} Val=[0,1,0]"
+  32-47: "RG0 Col 2 (price: INT64): [50000, 30000, 70000] (Offset +32B)"
+  48-63: "File Footer: Schema + Stats(id, name, price min/max & +32B)"
+  64-67: "Footer Len (4B)"
+  68-71: "PAR1 (4B)"
 ```
+<p align="center"><em>Figure 3-2: orders.parquet 파일의 바이트 오프셋 기준 Columnar 물리 레이아웃</em></p>
 
-- 파일 내부에 `id`, `name`, `price` 구역(`Column Chunk`)이 물리적으로 분리되어 있어, `SELECT SUM(price)`를 실행할 때 `Footer`에 적힌 `file_offset=104B` 위치로 바로 이동해 `price` 구역만 읽어낸다(Column Projection).
+- 파일 내부에 `id`(+4B), `name`(+16B), `price`(+32B) 구역(`Column Chunk`)이 물리적으로 분리되어 있어, `SELECT SUM(price)`를 실행할 때 `Footer`에 적힌 `offset=+32B` 위치로 바로 이동해 `price` 구역만 읽어낸다(Column Projection).
 - 또한 `Footer`에 각 Row Group별 최솟값(`min`)과 최댓값(`max`) 통계가 기록되어 있어, `WHERE price > 100000` 같은 조건이 들어오면 `max=70000`만 확인하고 해당 블록(수백만 행)을 압축조차 풀지 않고 통째로 건너뛴다(Predicate Pushdown / Skipping).
 
 ```mermaid
@@ -621,22 +622,22 @@ flowchart LR
 ```
 <p align="center"><em>Figure 11: RDBMS의 정규화 및 런타임 JOIN 구조와 MongoDB의 BSON 문서 단위 Pre-Joined 저장 구조 비교</em></p>
 
-### 5.1 저장 및 메모리 구조: Columnar도 일반 Row도 아닌 `BSON` 문서 덩어리
+### 5.1 저장 및 메모리 구조: Columnar도 일반 Row도 아닌 `BSON` 문서 타입
 
 하나의 주문 데이터(주문 기본 정보 + 주문한 상품 3개 + 배송지 정보)를 다룰 때 각 엔진의 물리적 저장 방식은 완전히 다르다.
 - 전통 RDBMS(Oracle, MySQL): `주문 테이블`, `주문상품 테이블(3줄)`, `배송지 테이블`로 쪼개어 따로 저장하고 읽을 때 `JOIN`한다.
-- Columnar 분석 엔진(Parquet, ClickHouse, Snowflake): 모든 필드를 세로 컬럼 배열로 분해해서 저장한다. 전체 매출 합계(`SUM`)는 초고속이지만, 특정 주문 1건의 전체 정보를 다시 모으려면(Gather) 메모리 수십 군데를 점프해야 한다.
-- MongoDB(`WiredTiger` 엔진 + `BSON` 포맷): JSON 텍스트를 그대로 쓰지 않고, 내부적으로 `BSON(Binary JSON)`이라는 이진 포맷으로 변환해 저장한다. 앞서 본 Spark의 `UnsafeRow`처럼 `BSON` 역시 각 필드 앞에 데이터 타입과 바이트 길이(Length Prefix)를 숫자로 적어두어, 원하는 필드를 찾을 때 문자열 파싱 없이 바이트 길이만큼 포인터를 건너뛰며 빠르게 읽는다. 무엇보다 주문 1건에 딸린 상품 배열과 배송지 객체를 쪼개지 않고 디스크와 메모리의 연속된 한 덩어리에 통째로 붙여 둔다.
+- Columnar 분석 엔진(Parquet, ClickHouse, Snowflake): 모든 필드를 세로 컬럼 배열로 분해해서 저장한다. 전체 매출 합계(`SUM`)는 초고속이지만, 특정 주문 1건의 전체 정보를 다시 모으려면(Gather) 메모리 수십 곳을 액세스하는 비용이 발생한다.
+- MongoDB(`WiredTiger` 엔진 + `BSON` 포맷): JSON 텍스트를 그대로 쓰지 않고, 내부적으로 `BSON(Binary JSON)`이라는 이진 포맷으로 변환해 저장한다. 앞서 본 Spark의 `UnsafeRow`처럼 `BSON` 역시 각 필드 앞에 데이터 타입과 바이트 길이(Length Prefix)를 숫자로 적어두어, 원하는 필드를 찾을 때 문자열 파싱 없이 바이트 길이만큼 포인터를 건너뛰며 빠르게 읽는다. 무엇보다 주문 1건에 딸린 상품 배열과 배송지 객체를 쪼개지 않고 디스크와 메모리의 연속해서 저장하는게 큰 특징이다.
 
 ### 5.2 조인과 재조립 병목을 피하는 MongoDB의 해법과 3대 특장점
 
 MongoDB의 핵심 설계 철학은 "읽을 때 비싼 JOIN이나 배열 재조립(Gather)을 하지 말고, 애초에 디스크에 쓸 때 화면(API)에서 함께 보여줄 데이터들을 하나의 문서(Document) 안에 중첩 배열과 객체로 미리 합쳐서(Pre-Joined / Embedding) 저장하자"는 것이다.
 
-1. 무조인(Zero-Join) 단건 조회(Point Lookup) 및 쓰기 속도:
-   애플리케이션 코드(Java, Node.js, Python)에서 다루는 객체(Object/List/Map) 모양과 디스크에 저장되는 `BSON` 문서 모양이 1:1로 일치한다. 상품 상세 페이지를 띄울 때 RDBMS처럼 4-5개 테이블을 조인할 필요 없이, `product_id`를 B-Tree 인덱스로 딱 한 번 찌르면 단 1번의 메모리/디스크 접근만으로 옵션 배열과 브랜드 정보가 완제품 형태로 반환된다(1-5ms 이내 응답).
+1. Zero-Join 및 단건 조회(Point Lookup) 및 쓰기 속도:
+   애플리케이션 코드(Java, Node.js, Python)에서 다루는 객체(Object/List/Map) 모양과 디스크에 저장되는 `BSON` 문서 모양이 1:1로 일치한다. 상품 상세 페이지를 띄울 때 RDBMS처럼 4-5개 테이블을 조인할 필요 없이, `product_id`를 B-Tree 인덱스로 딱 한 번 찌르면 단 1번의 메모리/디스크 접근만으로 옵션 배열과 브랜드 정보가 완제품 형태로 반환된다.
 2. 유연한 스키마(Dynamic Schema)와 중첩 배열 인덱싱(Multikey Index):
-   이커머스 상품처럼 화장품(`피부타입/용량`), 의류(`소재/세탁법`), 가전(`소비전력`)마다 속성(컬럼)이 수백 개씩 다른 도메인을 RDBMS나 Parquet, ClickHouse에 넣으려면 수백 개의 `NULL` 컬럼을 만들거나 스키마 변경 작업을 반복해야 한다. 반면 MongoDB는 문서마다 서로 다른 필드를 자유롭게 가질 수 있으면서도, 문서 내부의 중첩 배열 원소(`items.name`)에 바로 B-Tree 인덱스(Multikey Index)를 걸어 고속 검색을 수행한다.
-3. 엔진에 내장된 수평 확장성(Auto-Sharding):
+   행사유형별상품정보(`상품코드/원가/매가/기간`)마다 속성(컬럼)이 수백 개씩 다른 도메인을 RDBMS나 Parquet, ClickHouse에 넣으려면 수백 개의 `NULL` 컬럼을 만들거나 스키마 변경 작업을 반복해야 한다. 반면 MongoDB는 문서마다 서로 다른 필드를 자유롭게 가질 수 있으면서도, 문서 내부에서는 중첩 배열 원소(`items.name`)에 바로 B-Tree 인덱스(Multikey Index)를 걸어 빠른 검색을 지원한다.
+3. 엔진 내장 기능인 Auto-Sharding을 통한 수평 확장:
    단일 서버 디스크 한계를 넘어설 때 애플리케이션이 직접 분산을 구현해야 하는 일반 RDBMS와 달리, MongoDB는 `Shard Key` 기준으로 여러 대의 서버에 데이터를 자동 분산하고 라우팅(`mongos`)하는 구조가 엔진 코어에 내장되어 있다.
 
 ### 5.3 반대로 대용량 통계 분석(Spark, ClickHouse 영역)에서 MongoDB가 느린 이유
@@ -644,27 +645,118 @@ MongoDB의 핵심 설계 철학은 "읽을 때 비싼 JOIN이나 배열 재조�
 그렇다면 왜 MongoDB 하나로 모든 통계 분석까지 다 처리하지 않고 Spark나 Snowflake, ClickHouse를 따로 두는 것일까? 앞서 살펴본 디스크 I/O와 CPU Cache Line, Shuffle 체크포인트 원리를 대입하면 그 한계가 바로 드러난다.
 
 1. Column Projection 불가로 인한 디스크 I/O 낭비:
-   MongoDB의 `WiredTiger` 스토리지 엔진은 문서(`BSON`) 전체를 하나의 단위로 묶어 디스크 페이지에 저장한다. 만약 1억 건의 주문 문서에서 4바이트짜리 `배송비` 숫자 하나만 평균 내고 싶어도, 필요한 컬럼만 골라 읽는 Column Projection이 불가능하여 주문자 이름, 상품 배열, 주소 텍스트가 다 들어있는 수 킬로바이트짜리 무거운 `BSON` 문서 1억 개 전체를 디스크에서 다 읽어들여야 한다.
-2. CPU Cache Line 오염과 하드웨어 SIMD 불가:
+   MongoDB의 `WiredTiger` 스토리지 엔진은 문서(`BSON`) 전체를 하나의 단위로 묶어 디스크 페이지에 저장한다. 만약 1억 건의 주문 문서에서 4바이트짜리 `배송비` 숫자 하나만 평균 내고 싶어도, 필요한 컬럼만 골라 읽는 Column Projection이 불가능하여 주문자 이름, 상품 배열, 주소 텍스트가 다 들어있는 KB 단위로 크기가 큰 `BSON` 문서 1억 개 전체를 디스크에서 다 읽어들여야 한다.
+2. 비효율적 CPU Cache Line 발생으로 인한 SIMD 불가:
    메모리(WiredTiger Cache)에 올라온 뒤에도 64바이트 CPU Cache Line 안에 온갖 텍스트 필드가 섞여 들어오며(Cache Pollution), 문서마다 필드 위치가 달라 ClickHouse처럼 특정 숫자만 배열로 모아 CPU SIMD로 16개씩 동시 계산하는 것이 물리적으로 불가능하다.
-3. Shuffle 파일 체크포인트 부재로 인한 대규모 분산 조인(`$lookup`)의 한계:
-   MongoDB에도 조인 연산자(`$lookup`)가 존재하지만, 이는 소량의 문서를 결합할 때 쓰는 용도다. 앞서 `3.3절`에서 살펴본 Spark의 Shuffle 파일 체크포인트(`.data`/`.index` 디스크 세이브)나 외부 정렬 병합(External Sort-Merge) 체계가 없기 때문에, 수억 건짜리 두 컬렉션을 조인하면 메모리 제한에 걸려 작업이 중단된다.
+3. 대규모 분산 조인(`$lookup`)의 한계:
+   MongoDB에도 조인 연산자(`$lookup`)가 존재하지만, 이는 소량의 문서를 결합할 때 쓰는 용도다.
+4. Shuffle 파일 체크포인트 부재
+   앞서 `3.3절`에서 살펴본 Spark의 Shuffle 파일 체크포인트(`.data`/`.index` 디스크 세이브)나 외부 정렬 병합(External Sort-Merge) 체계가 없기 때문에, 수억 건짜리 두 컬렉션을 조인하면 메모리 제한에 걸려 작업이 중단된다.
 
 ---
 
-## 6. 요약 및 전체 데이터 파이프라인 역할 분담
+## 6. 확장 비교: Google BigQuery(Dremel)는 어떻게 다르고 어떤 특장점이 있는가?
+
+지금까지 다룬 MapReduce, Spark, Snowflake, ClickHouse, MongoDB의 구조 위에서 Google BigQuery(내부 엔진명 `Dremel`)를 살펴보면, Google이 앞서 언급된 엔진들의 트레이드오프를 네트워크와 계층 분리 아키텍처로 어떻게 우회했는지 확인할 수 있다.
+
+사실 앞선 장에서 계속 등장했던 컬럼형 파일 포맷 Apache Parquet의 설계 원리가 바로 2010년 Google이 발표한 BigQuery의 기반 논문(*Dremel: Interactive Analysis of Web-Scale Datasets*)을 오픈소스 진영이 구현한 것이다.
+
+### 6.1 3단 분리 아키텍처: 스토리지·연산·인메모리 Shuffle 계층의 물리적 분리
+
+앞서 Spark와 분산 분석 DB(Snowflake, ClickHouse)를 비교할 때 가장 큰 딜레마는 Stage 간 데이터를 주고받는 `Shuffle`이었다.
+- Spark는 장애 복구(안정성)를 위해 워커 노드의 로컬 디스크에 Shuffle 파일을 쓰느라 속도가 느려진다.
+- Snowflake와 ClickHouse는 속도를 위해 워커 노드의 메모리로 직접 스트리밍하지만, 메모리가 부족하거나 도중에 노드 1대만 죽어도 쿼리 전체를 처음부터 다시 실행해야 한다.
+
+BigQuery는 이 딜레마를 스토리지, 연산(Compute Slot), 그리고 중간 Shuffle 메모리를 아예 물리적으로 다른 서버 클러스터로 쪼개는 3단 분리(Disaggregated Architecture)로 해결했다.
+
+```mermaid
+sequenceDiagram
+    participant Storage as Colossus 분산 스토리지<br/>(Capacitor 컬럼 포맷)
+    participant Leaf as Dremel Leaf Slots<br/>(C++ Vectorized 연산)
+    participant Shuffle as Disaggregated In-Memory Shuffle<br/>(독립된 전용 RAM 클러스터)
+    participant Mixer as Dremel Mixer Slots<br/>(조인 및 집계)
+
+    Storage->>Leaf: Jupiter 페타비트 네트워크로 필요한 컬럼 블록 스캔
+    Leaf->>Shuffle: 로컬 디스크 쓰기 없이 전용 Shuffle RAM에 중간 결과 적재
+    Note over Leaf,Shuffle: 연산 Slot과 Shuffle RAM이 물리적으로 분리됨
+    Leaf--xLeaf: 만약 Leaf Slot 1대에 장애가 발생해도 Shuffle 데이터는 보존됨
+    Shuffle->>Mixer: 새 Slot 즉시 투입 및 안전하게 이어서 조인·집계 완료
+```
+<p align="center"><em>Figure 12: BigQuery의 스토리지·연산 Slot·독립 인메모리 Shuffle 3단 분리 시퀀스</em></p>
+
+이 독립된 인메모리 Shuffle 계층 덕분에 BigQuery는 두 가지 이점을 동시에 확보한다.
+1. 디스크 I/O 없는 인메모리 Shuffle 속도:
+   연산 워커(`Slot`)는 중간 결과를 로컬 디스크에 쓰지 않고, Google 데이터센터의 초고속 네트워크(`Jupiter`)를 통해 전용 Shuffle 클러스터의 RAM에 바로 밀어 넣는다.
+2. Spark 수준의 부분 장애 복구(Fault Tolerance):
+   연산 워커(`Slot`)와 Shuffle 데이터를 보관하는 메모리 노드가 물리적으로 분리되어 있다. 따라서 1시간짜리 초대형 조인 도중 연산을 수행하던 특정 `Slot`이 죽더라도, 이미 계산된 중간 데이터는 독립된 Shuffle 메모리 계층에 그대로 살아 있다. BigQuery 스케줄러는 쿼리를 취소하지 않고 새로운 `Slot`을 즉시 띄워 죽은 작업만 몇 밀리초 만에 이어서 끝낸다.
+
+### 6.2 저장 구조(`Capacitor`): MongoDB의 계층 문서와 Columnar의 결합
+
+앞서 MongoDB를 다룰 때 다음과 같은 구조적 대비가 있었다.
+- MongoDB는 하나의 주문 안에 상품 배열과 배송지 객체를 중첩(`Nested / Repeated`)해서 통째로 저장하므로 `JOIN`이 필요 없지만, 전체 통계(`SUM`)를 낼 때는 무거운 문서 전체를 다 읽어야 해서 느리다.
+- 반면 일반 RDBMS나 ClickHouse/Snowflake에서 세로 컬럼 연산을 빠르게 하려면 중첩 배열을 풀어서 별도 테이블로 정규화해야 하고, 읽을 때 비싼 `JOIN`을 해야 한다.
+
+BigQuery는 이 문제를 `Dremel Encoding`(현재의 `Capacitor` 스토리지 포맷)으로 해결했다. 논리적으로는 MongoDB처럼 한 행 안에 중첩 배열(`ARRAY`)과 객체(`STRUCT`)를 통째로 집어넣어 `JOIN`을 없애면서도, 물리적인 디스크(`Colossus`)에는 모든 하위 필드를 세로 컬럼 배열로 완전히 분해해서 저장한다.
+
+- 값을 세로 배열로 저장할 때 값 옆에 `Repetition Level`(어느 배열 깊이에서 반복되었는가)과 `Definition Level`(어느 깊이까지 NULL이 아닌가)이라는 1-2비트짜리 작은 정수 태그만 함께 기록한다.
+- 덕분에 사용자 입장에서는 MongoDB처럼 중첩 문서 구조를 그대로 써서 비싼 테이블 `JOIN`을 피할 수 있으면서도, `SELECT SUM(items.price)`를 실행하면 디스크에서 오직 `items.price` 세로 배열만 읽어 C++ SIMD로 초고속 합계를 낼 수 있다.
+- 나아가 `Capacitor` 포맷은 파일을 저장할 때 컬럼 값들의 패턴을 분석해 같은 값들이 최대한 연속되도록 행의 순서를 자동으로 재배치(Row Reordering)하여 압축률(RLE)을 높이고, 데이터를 압축 해제하지 않은 상태 그대로 CPU 레지스터에서 비교·필터링하는 기술까지 적용되어 있다.
+
+### 6.3 실행 토폴로지: 고정된 워커 클러스터 대 다단계 `Serving Tree`
+
+Spark나 Snowflake, ClickHouse는 쿼리를 돌리기 전에 사용자가 워커 노드 대수나 웨어하우스 크기를 먼저 정한다. 그러면 1대의 마스터(Driver/Coordinator)가 고정된 워커들에게 일을 시키고 결과를 모으는 2단 구조로 동작한다.
+
+반면 BigQuery는 사용자가 서버 대수를 지정하지 않는 완전한 멀티테넌트 Serverless 아키텍처이며, 쿼리를 실행할 때 다단계 트리 구조(`Serving Tree`)를 사용한다.
+
+```mermaid
+flowchart TD
+    ROOT(["Root Server (최종 결과 취합)"])
+    M1["Mixer 1 (중간 집계 계층)"]
+    M2["Mixer 2 (중간 집계 계층)"]
+    L1["Leaf Slots (1 ... 1,000)<br/>C++ Vectorized 스캔"]
+    L2["Leaf Slots (1,001 ... 2,000)<br/>C++ Vectorized 스캔"]
+    COL[("Colossus 분산 스토리지 (Capacitor 포맷)")]
+
+    ROOT --> M1
+    ROOT --> M2
+    M1 --> L1
+    M2 --> L2
+    L1 --> COL
+    L2 --> COL
+```
+<p align="center"><em>Figure 13: 수천 개의 탄력적 Slot을 조율하는 BigQuery Dremel의 다단계 Serving Tree 구조</em></p>
+
+1. 다단계 중간 집계 계층(`Root -> Mixer -> Leaf`):
+   BigQuery는 페타바이트급 쿼리 하나를 몇 초 안에 끝내기 위해 순간적으로 수천 개의 `Slot`을 동시에 투입한다. 수천 개의 `Leaf` 노드가 계산한 결과를 1대의 마스터 서버(`Root`)로 동시에 보내면 마스터의 네트워크와 메모리가 즉시 포화되므로, 중간에 `Mixer` 계층을 두어 수천 개의 결과를 단계별로 압축·합산하면서 위로 올려보낸다.
+2. 런타임 동적 실행 계획 수정(Dynamic Execution Plan):
+   쿼리를 시작할 때는 100개의 `Slot`으로 출발했더라도, 중간에 특정 테이블 조인 결과가 예상보다 100배 커진 것이 감지되면 쿼리를 멈추지 않고 실행 도중에 즉석에서 `Slot`을 2,000개로 늘리고 조인 방식(Broadcast Join에서 Hash Shuffle Join으로)을 실시간으로 전환한다.
+
+### 6.4 BigQuery의 구조적 한계와 트레이드오프
+
+거대한 Serverless 아키텍처를 가진 BigQuery도 물리적인 트레이드오프 때문에 ClickHouse나 Spark에 밀리는 영역이 명확히 존재한다.
+
+1. 0.1초 이하의 초저지연(Sub-second) 실시간 쿼리 불가 (ClickHouse 대비 한계):
+   BigQuery는 쿼리가 들어오면 멀티테넌트 풀에서 수천 개의 `Slot`을 스케줄링하고, 다단계 `Serving Tree`를 구성한 뒤, 원격 분산 스토리지(`Colossus`)에서 데이터를 가져온다. 이 기본 준비 과정 때문에 단 10줄짜리 작은 테이블을 조회해도 최소 0.5-1.5초의 기본 시작 지연(Base Latency)이 깔린다. 반면 로컬 NVMe SSD와 RAM Sparse Index를 쓰는 ClickHouse는 수억 건에서도 10-50ms 만에 응답을 반환하므로, 대고객 웹 화면에서 초당 수천 번 호출되는 실시간 차트 API 용도로는 ClickHouse가 적합하다.
+2. 세밀한 포인트 조회(Point Lookup)에 취약한 블록 스캔 구조:
+   전통적인 B-Tree 인덱스가 없고, 날짜 기준 `Partitioning`과 최대 4개 컬럼 기준 블록 정렬인 `Clustering`에만 의존해 불필요한 블록을 건너뛴다. 파티션 조건을 빠뜨리거나 클러스터링되지 않은 일반 컬럼으로 몇 건의 데이터를 찾으려고 하면 수 테라바이트의 컬럼 블록 전체를 풀 스캔한다. On-Demand 요금제에서는 스캔한 데이터 용량(TB당 과금)대로 요금이 부과되므로 비용 사고로 이어지기 쉽다.
+3. 비정형 데이터 가공 및 유연한 코드 실행의 한계 (Spark 대비 한계):
+   철저히 SQL 중심의 분석 엔진이다. 최근 Python UDF나 원격 함수를 지원하지만, Spark처럼 수십 테라바이트의 이미지, 오디오, 비정형 로그 파일을 Python/Scala 코드로 세밀하게 제어하거나 복잡한 머신러닝 파이프라인을 단일 코드로 짜서 돌리는 범용성에서는 Spark를 대체할 수 없다.
+
+---
+
+## 7. 요약 및 전체 데이터 파이프라인 역할 분담
 
 지금까지 살펴본 모든 엔진의 내부 메커니즘과 실무 아키텍처상의 역할을 한눈에 비교하면 다음과 같다.
 
-| 구분 | MongoDB (Document OLTP) | Apache Spark (분산 배치/ETL) | Snowflake (클라우드 MPP DW) | ClickHouse (실시간 OLAP) |
-| :--- | :--- | :--- | :--- | :--- |
-| 기본 데이터 단위 | 계층형 문서 (`BSON` 통째 저장) | 행 단위 이진 포맷 (`UnsafeRow`) | 불변 컬럼 파일 (`Micro-partition`) | 물리 정렬 컬럼 블록 (`MergeTree`) |
-| 인메모리 연산 방식 | B-Tree 탐색 및 문서 단위 조작 | Row 루프 (Photon/Gluten 시 SIMD) | C++ Columnar Vectorized (SIMD) | C++ Columnar Vectorized (SIMD) |
-| 조인 및 Shuffle | 소량 `$lookup` (대규모 Shuffle 불가) | 로컬 디스크 `.data/.index` 체크포인트 | 인메모리 스트리밍 (부족 시 S3 Spill) | 인메모리 해시 조인 (대규모 시 OOM 위험) |
-| 가장 빠른 작업 | 특정 ID 1건의 복합 객체 즉시 조회/수정 | 수십 TB 비정형 정제 및 다단계 대규모 조인 | 복잡한 다중 테이블 조인 및 전사 BI 분석 | 단일/소수 넓은 테이블 초고속 실시간 집계 |
-| 가장 취약한 작업 | 전체 문서를 다 읽어야 하는 컬럼 통계 | 0.1초 내 응답해야 하는 짧은 단건 조회 | 비정형 코드 제어 및 초단기 포인트 조회 | 무거운 다중 테이블 조인 및 빈번한 단건 수정 |
+| 구분 | MongoDB (Document OLTP) | Apache Spark (분산 배치/ETL) | Snowflake (클라우드 MPP DW) | ClickHouse (실시간 OLAP) | Google BigQuery (Serverless Dremel) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| 기본 데이터 단위 | 계층형 문서 (`BSON` 통째 저장) | 행 단위 이진 포맷 (`UnsafeRow`) | 불변 컬럼 파일 (`Micro-partition`) | 물리 정렬 컬럼 블록 (`MergeTree`) | 중첩 지원 컬럼 블록 (`Capacitor`) |
+| 인메모리 연산 방식 | B-Tree 탐색 및 문서 단위 조작 | Row 루프 (Photon/Gluten 시 SIMD) | C++ Columnar Vectorized (SIMD) | C++ Columnar Vectorized (SIMD) | C++ Columnar Vectorized (SIMD) |
+| 조인 및 Shuffle | 소량 `$lookup` (대규모 Shuffle 불가) | 로컬 디스크 `.data/.index` 체크포인트 | 인메모리 스트리밍 (부족 시 S3 Spill) | 인메모리 해시 조인 (대규모 시 OOM 위험) | 독립된 전용 인메모리 Shuffle 클러스터 |
+| 가장 빠른 작업 | 특정 ID 1건의 복합 객체 즉시 조회/수정 | 수십 TB 비정형 정제 및 다단계 대규모 조인 | 복잡한 다중 테이블 조인 및 전사 BI 분석 | 단일/소수 넓은 테이블 초고속 실시간 집계 | 관리 없는 페타바이트급 Ad-hoc 및 중첩 JSON 분석 |
+| 가장 취약한 작업 | 전체 문서를 다 읽어야 하는 컬럼 통계 | 0.1초 내 응답해야 하는 짧은 단건 조회 | 비정형 코드 제어 및 초단기 포인트 조회 | 무거운 다중 테이블 조인 및 빈번한 단건 수정 | 0.1초 이하 초저지연 응답 및 잘못된 풀 스캔 과금 |
 
-결국 각 엔진의 메모리 레이아웃과 디스크 저장 구조가 곧 그 엔진이 가장 잘하는 역할을 결정한다. 현대 데이터 플랫폼이 하나의 만능 DB만 쓰지 않고 아래와 같이 파이프라인을 구성하는 이유가 바로 여기에 있다.
+결국 각 엔진의 메모리 레이아웃과 디스크·Shuffle 구조가 곧 그 엔진이 가장 잘하는 역할을 결정한다. 현대 데이터 플랫폼이 하나의 만능 DB만 쓰지 않고 아래와 같이 파이프라인을 구성하는 이유가 바로 여기에 있다.
 
 1. 실시간 서비스 계층 (`MongoDB` / `RDBMS`):
    고객이 앱에서 상품을 조회하고 장바구니에 담아 주문하는 실시간 트랜잭션은 무조인 단건 조회(`BSON`)와 스키마 유연성이 뛰어난 MongoDB나 RDBMS가 1-5ms 내에 처리한다.
@@ -672,5 +764,5 @@ MongoDB의 핵심 설계 철학은 "읽을 때 비싼 JOIN이나 배열 재조�
    운영 DB에서 발생한 데이터 변경 내역(CDC)을 추출해 S3의 컬럼형 파일(Parquet)로 쌓고, 그 위에 파일별 통계 목차(Manifest)와 트랜잭션 기능을 제공하는 Iceberg나 Delta Lake 계층을 얹는다.
 3. 대규모 정제 및 배치 조인 계층 (`Apache Spark` + `Photon` / `Gluten`):
    수십 테라바이트의 원본 로그와 여러 도메인 테이블을 묶는 무거운 다단계 조인·집계·머신러닝 전처리는, 로컬 디스크 Shuffle 파일 체크포인트(`.data`/`.index`)를 통해 노드 장애나 메모리 한계에도 끝까지 배치를 완주해 내는 Spark가 담당한다.
-4. 고속 분석 및 서빙 계층 (`Snowflake` / `ClickHouse`):
-   Spark가 정제해 둔 마트 테이블을 바탕으로, 복잡한 다중 테이블 전사 BI 분석은 Snowflake가, 대고객 실시간 통계 대시보드와 로그 집계는 C++ SIMD와 로컬 SSD Sparse Index를 극대화한 ClickHouse가 서브초(Sub-second) 단위로 응답한다.
+4. 고속 분석 및 서빙 계층 (`Snowflake` / `BigQuery` / `ClickHouse`):
+   정제된 마트 테이블을 바탕으로, 복잡한 다중 테이블 전사 BI 분석은 Snowflake가, 서버 관리 없는 페타바이트급 중첩 JSON·Ad-hoc 분석은 BigQuery가, 대고객 실시간 통계 대시보드와 로그 집계는 C++ SIMD와 로컬 SSD Sparse Index를 극대화한 ClickHouse가 각자의 강점 영역을 맡아 응답한다.
