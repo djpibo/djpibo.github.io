@@ -1,21 +1,21 @@
 ---
 id: why-enterprises-still-choose-oracle-over-postgresql
-title: "2026년에도 대기업이 PostgreSQL 대신 여전히 Oracle을 선택하는 이유: 아티클 요약과 DBA 관점의 회고"
+title: "2026년에도 대기업이 PostgreSQL 대신 여전히 Oracle을 선택하는 이유: 아티클 요약과 Oracle DBA로서 생각"
 sidebar_label: 대기업이 여전히 Oracle을 선택하는 이유
 sidebar_position: 3
 date: "2026년 11월 21일"
 reading_time: "약 6분"
 ---
 
-최근 Jaydeep Shamdasani의 Medium 아티클("Why Enterprises Still Choose Oracle Over PostgreSQL in 2026")을 읽었다. 무료이면서 기능과 생태계 모두 성숙한 PostgreSQL이 있음에도, 왜 은행·통신사·글로벌 대기업은 여전히 수백만 달러를 지불하며 Oracle을 유지하는가에 대한 글이다.
+최근 Jaydeep Shamdasani의 Medium 아티클("Why Enterprises Still Choose Oracle Over PostgreSQL in 2026")을 읽었다. 오픈소스이면서 기능과 생태계 모두 양호한 PostgreSQL이 있음에도 왜 은행,통신사,글로벌 대기업은 여전히 수백만 달러를 지불하며 Oracle을 유지하는가에 대한 글이었다.
 
-개발자에서 Oracle DBA로 직무를 전환해 현업에서 데이터베이스 내부를 파고들며 느꼈던 답답함, 그리고 PostgreSQL을 스터디하며 품었던 의문들과 맞닿아 있는 지점이 많았다. 원문의 핵심 논지를 정리하고, 실제 엔지니어링 조직 관점에서 느낀 개인적인 생각을 덧붙인다.
+개발자에서 Oracle DBA로 직무를 전환해 현업에서 데이터베이스 내부를 파고들며 느꼈던 생각과 그리고 PostgreSQL 스터디를 진행하며 품었던 의문들과 맞닿아 있는 지점이 많았다. 원문의 핵심 논지를 정리하고 개발조직 차원에서 느낀 개인적인 생각을 덧붙여 보았다.
 
 ---
 
-## 1. 아티클 핵심 요약: 대기업이 Oracle을 선택하는 8가지 이유
+## 1. 아티클 요약: 대기업이 Oracle을 선택하는 8가지 이유
 
-원문은 대기업이 DB를 선택할 때 단순한 라이선스 절감보다 안정성, 규제 준수, 장기적 리스크 최소화를 최우선 기준으로 둔다고 짚는다. 구체적인 8가지 이유는 크게 세 가지 축으로 요약할 수 있다.
+원문은 대기업이 DB를 선택할 때 단순한 라이선스 비용 절감보다 안정성, 규제 준수, 장기적 리스크 최소화를 최우선 기준으로 둔다고 짚는다. 구체적인 8가지 이유는 다시 크게 세 가지 축으로 요약할 수 있다.
 
 ### 1.1 책임 소재와 다운타임 리스크 관리
 1. 엔터프라이즈 지원과 명확한 책임 소재:
