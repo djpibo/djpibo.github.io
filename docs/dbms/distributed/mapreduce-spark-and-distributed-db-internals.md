@@ -274,9 +274,36 @@ Spark가 MapReduce의 한계를 극복하고 빅데이터 표준 엔진으로 �
    - 덕분에 Spark는 수만 개의 Parquet 파일을 일일이 열어보지 않고, 맨 앞의 작은 메타데이터 파일만 읽어서 조건에 맞는 Parquet 파일 몇 개만 수 밀리초 만에 골라내는데 이를 `File-level Pruning`이라고 부른다. 
    - 테이블 포맷으로 구성해뒀기 때문에 일반 파일 시스템에서는 불가능했던 DB 수준의 ACID 트랜잭션(`UPDATE`, `DELETE`, `MERGE`)과 과거 시점 조회(Time Travel)까지 가능해졌다.
 2. 연산 엔진 한계 보완 (`Databricks Photon` / 오픈소스 `Apache Gluten`):
-   - 기존 Spark는 쿼리 실행 계획을 수행하는 Catalyst Optimizer뿐만 아니라 실제 데이터를 읽고 계산하는 물리 연산도 모두 JVM 위의 Scala/Java 코드에서 `UnsafeRow` 매핑 객체로 1행씩 루프 처리를 수행했다.
-   - `Databricks Photon`(상용)과 `Apache Gluten`(오픈소스 플러그인)은 Spark의 코드 호환성, 스케줄링, 장애 복구에 대한 기능은 그대로 유지한 채 실제 데이터를 계산하는 물리 실행 엔진을 Snowflake, ClickHouse와 동일한 C++ Columnar Vectorized(SIMD) 엔진으로 교체한 아키텍처다.
-   - 상용 Databricks 환경에서는 자체 개발한 C++ `Photon` 엔진이 작동하며, 오픈소스 Spark 환경에서는 `Apache Gluten` 플러그인을 장착해 연산 작업을 JNI(Java Native Interface)를 통해 Meta가 개발한 C++ `Velox` 엔진이나 `ClickHouse` 코어 엔진으로 위임 처리(Offloading) 한다. 이로써 Spark의 안정성과 C++ 분산 분석 DB의 연산 속도를 동시에 얻는 구조로 진화했다.
+
+   연산 엔진의 한계를 이해하려면 먼저 Parquet 파일을 읽을 때 기본 Spark 내부에서 벌어지는 `ColumnarToRow` 변환 과정을 짚어야 한다.
+
+   흔히 "Spark에서 Parquet(컬럼형 파일)를 쓰니까 메모리 연산도 끝까지 컬럼형으로 동작할 것"이라고 생각하기 쉽다. 하지만 순수 오픈소스 Spark의 SQL 실행 계획(Physical Plan)을 열어보면 파일 스캔 직후에 `ColumnarToRow`라는 연산자가 자동으로 끼어드는 것을 볼 수 있다.
+
+```mermaid
+flowchart TD
+
+    PARQ[("Parquet 파일 (Disk)<br/>Row Group 내 필요한 Column Chunk만 I/O")]
+    DEC{{"실행 엔진 유형"}}
+
+    V_READ["Vectorized Reader<br/>ColumnarBatch (4,096행 배열 로드)"]
+    C2R["병목: ColumnarToRowExec<br/>세로 배열을 가로 UnsafeRow로 1행씩 재조립<br/>(전체 CPU의 20-40% 소모)"]
+    OP_ROW["기본 Catalyst 코어 연산자<br/>Iterator[UnsafeRow] (1행씩 스칼라 루프)"]
+
+    N_READ["Native Parquet Reader<br/>ColumnarBatch 상태 그대로 유지"]
+    N_OP["C++ SIMD Vectorized 연산<br/>ColumnarToRow 생략 (Filter/Join/Agg 전 구간)"]
+
+    PARQ --> DEC
+    DEC -->|"기본 Spark (JVM)"| V_READ --> C2R --> OP_ROW
+    DEC -->|"Photon / Apache Gluten (C++)"| N_READ --> N_OP
+```
+<p align="center"><em>Figure 5: Parquet 파일 스캔 이후 기본 Spark 엔진(ColumnarToRow)과 Native 엔진(Photon/Gluten)의 실행 분기</em></p>
+
+   - 기본 Spark의 `VectorizedParquetRecordReader`는 Parquet 파일의 `Column Chunk`를 읽을 때 메모리에 `ColumnarBatch`(4,096개 행의 컬럼 배열 묶음) 형태로 빠르게 퍼 올린다.
+   - 그러나 그 다음 단계인 기본 Catalyst 코어 연산자(`FilterExec`, `BroadcastHashJoinExec`, `HashAggregateExec` 등)는 입력과 출력이 행 단위 포맷인 `UnsafeRow`를 1건씩 주고받는 `Iterator[UnsafeRow]`로 설계되어 있다.
+   - 그 결과 리더가 세로 배열(`ColumnarBatch`)로 잘 읽어온 데이터를, 바로 뒷단의 `ColumnarToRowExec`가 개입해 가로 방향의 `UnsafeRow`로 1행씩 다시 조립(Transpose)한 뒤 루프로 밀어 넣는다. 이 변환 과정에만 전체 쿼리 CPU 시간의 20-40%가 소모되곤 한다.
+   - 바로 이 `ColumnarToRow` 병목을 없애고 C++ 컬럼 배열 상태로 끝까지 연산하기 위해 등장한 것이 `Databricks Photon`(상용)과 `Apache Gluten`(오픈소스 플러그인)이다.
+   - 두 엔진 모두 Spark의 코드 호환성, 스케줄링, 장애 복구 기능은 그대로 유지한 채, 실제 데이터를 계산하는 물리 실행 엔진만 Snowflake·ClickHouse와 동일한 C++ Columnar Vectorized(SIMD) 엔진으로 교체한 아키텍처다.
+   - 상용 Databricks 환경에서는 자체 개발한 C++ `Photon` 엔진이 작동하며, 오픈소스 Spark 환경에서는 `Apache Gluten` 플러그인을 장착해 연산 작업을 JNI(Java Native Interface)를 통해 Meta가 개발한 C++ `Velox` 엔진이나 `ClickHouse` 코어 엔진으로 위임 처리(Offloading)한다. 이로써 Spark의 안정성과 C++ 분산 분석 DB의 연산 속도를 동시에 얻는 구조로 진화했다.
 
 ---
 
@@ -307,34 +334,7 @@ sequenceDiagram
         Engine->>Transfer: Disk 기록 생략 -> 네트워크 소켓으로 다음 노드 메모리에 직접 스트리밍
     end
 ```
-<p align="center"><em>Figure 5: Spark의 Row 중심 안전 파이프라인과 분산 분석 DB(Snowflake/ClickHouse)의 C++ Columnar Vectorized 파이프라인 시퀀스 비교</em></p>
-
-#### Parquet 파일 스캔 이후 Spark의 `ColumnarToRow` 변환 과정
-
-흔히 "Spark에서 Parquet(컬럼형 파일)를 쓰니까 메모리 연산도 끝까지 컬럼형으로 동작할 것"이라고 생각하기 쉽다. 하지만 순수 오픈소스 Spark의 SQL 실행 계획(Physical Plan)을 열어보면 파일 스캔 직후에 `ColumnarToRow`라는 연산자가 자동으로 끼어드는 것을 볼 수 있다.
-
-```mermaid
-flowchart TD
-
-    PARQ[("Parquet 파일 (Disk)<br/>Row Group 내 필요한 Column Chunk만 I/O")]
-    DEC{{"실행 엔진 유형"}}
-
-    V_READ["Vectorized Reader<br/>ColumnarBatch (4,096행 배열 로드)"]
-    C2R["병목: ColumnarToRowExec<br/>세로 배열을 가로 UnsafeRow로 1행씩 재조립<br/>(전체 CPU의 20-40% 소모)"]
-    OP_ROW["기본 Catalyst 코어 연산자<br/>Iterator[UnsafeRow] (1행씩 스칼라 루프)"]
-
-    N_READ["Native Parquet Reader<br/>ColumnarBatch 상태 그대로 유지"]
-    N_OP["C++ SIMD Vectorized 연산<br/>ColumnarToRow 생략 (Filter/Join/Agg 전 구간)"]
-
-    PARQ --> DEC
-    DEC -->|"기본 Spark (JVM)"| V_READ --> C2R --> OP_ROW
-    DEC -->|"Photon / Apache Gluten (C++)"| N_READ --> N_OP
-```
-<p align="center"><em>Figure 6: Parquet 파일 스캔 이후 기본 Spark 엔진(ColumnarToRow)과 Native 엔진(Photon/Gluten)의 실행 분기</em></p>
-
-- 기본 Spark의 `VectorizedParquetRecordReader`는 Parquet 파일의 `Column Chunk`를 읽을 때 메모리에 `ColumnarBatch`(4,096개 행의 컬럼 배열 묶음) 형태로 빠르게 퍼 올린다.
-- 그러나 그 다음 단계인 기본 Catalyst 코어 연산자(`FilterExec`, `BroadcastHashJoinExec`, `HashAggregateExec` 등)는 입력과 출력이 행 단위 포맷인 `UnsafeRow`를 1건씩 주고받는 `Iterator[UnsafeRow]`로 설계되어 있다.
-- 그 결과 리더가 세로 배열(`ColumnarBatch`)로 잘 읽어온 데이터를, 바로 뒷단의 `ColumnarToRowExec`가 개입해 가로 방향의 `UnsafeRow`로 1행씩 다시 조립(Transpose)한 뒤 루프로 밀어 넣는다. 이 변환 과정에만 전체 쿼리 CPU 시간의 20-40%가 소모되곤 하며, 앞서 설명한 `Photon`과 `Apache Gluten`은 바로 이 `ColumnarToRow` 단계를 없애고 C++ 컬럼 배열 상태로 끝까지 연산하기 위해 도입된 것이다.
+<p align="center"><em>Figure 6: Spark의 Row 중심 안전 파이프라인과 분산 분석 DB(Snowflake/ClickHouse)의 C++ Columnar Vectorized 파이프라인 시퀀스 비교</em></p>
 
 ---
 
