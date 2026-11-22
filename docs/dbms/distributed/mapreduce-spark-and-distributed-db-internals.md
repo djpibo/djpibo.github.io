@@ -343,30 +343,26 @@ flowchart TD
 세 엔진이 디스크(또는 오브젝트 스토리지)에 데이터를 실제로 어떻게 저장하고, 조건절(`WHERE`) 조회 시 불필요한 디스크 블록을 어떻게 건너뛰는지(Data Skipping)를 비교하면 아래 그림과 같다.
 
 ```mermaid
-flowchart LR
+sequenceDiagram
+    participant Query as 쿼리 엔진
+    participant Meta as 메타데이터 / 인덱스 계층
+    participant Disk as 실제 데이터 스토리지
 
-    subgraph SP_STORE ["1. Spark + Iceberg / Delta Lake (S3 파일 + Manifest 계층)"]
-        direction LR
-        MANIFEST["Manifest / _delta_log 파일<br/>파일별 경로 및 컬럼 Min/Max 기록"]
-        PARQ_F[("S3 Parquet 파일들 (128MB-1GB)<br/>내부 Row Group + 하단 Footer")]
-        MANIFEST -->|"1차: 조건에 맞는 파일만 선별"| PARQ_F
-    end
-
-    subgraph SF_STORE ["2. Snowflake (중앙 메타데이터 DB + S3 Micro-partition)"]
-        direction LR
-        FDB["Cloud Services (FoundationDB)<br/>전역 메타데이터 및 모든 컬럼 통계 상주"]
-        MICRO[("S3 Micro-partition (50-500MB)<br/>독점 컬럼 포맷 (PAX 구조)")]
-        FDB -->|"파일 열기 전 수 ms 내 파티션 확정"| MICRO
-    end
-
-    subgraph CH_STORE ["3. ClickHouse (RAM Sparse Index + 로컬 SSD MergeTree)"]
-        direction LR
-        SPARSE["RAM 상주 primary.idx<br/>8,192행(Granule)당 대표 키 1개만 보관"]
-        MERGETREE[("Local NVMe SSD (data.bin / mrk)<br/>ORDER BY 키 기준 물리 정렬된 컬럼 블록")]
-        SPARSE -->|"해당 파일 Offset으로 즉시 Seek"| MERGETREE
+    alt 1. Spark + Iceberg / Delta Lake (Manifest 기반 2단계 Pruning)
+        Query->>Meta: Manifest / _delta_log 파일 조회 (파일별 컬럼 Min/Max 확인)
+        Meta-->>Query: 조건에 맞는 대상 Parquet 파일 목록 선별 (1차 Pruning)
+        Query->>Disk: S3 Parquet 파일(128MB-1GB) Footer 확인 후 해당 Row Group만 스캔
+    else 2. Snowflake (중앙 FoundationDB 메타데이터 + Micro-partition)
+        Query->>Meta: Cloud Services(FoundationDB) 전역 컬럼 통계 조회
+        Meta-->>Query: S3 파일을 열기 전 수 ms 내 대상 Micro-partition(50-500MB) 확정
+        Query->>Disk: 확정된 S3 Micro-partition에서 필요한 컬럼 조각만 직접 로드
+    else 3. ClickHouse (RAM Sparse Index + 로컬 NVMe SSD MergeTree)
+        Query->>Meta: RAM 상주 primary.idx 이진 탐색 (8,192행 Granule당 대표 키 1개)
+        Meta-->>Query: 목표 Granule의 정확한 파일 Offset 반환
+        Query->>Disk: 로컬 NVMe SSD(data.bin) 해당 Offset으로 즉시 Seek (ORDER BY 물리 정렬)
     end
 ```
-<p align="center"><em>Figure 7: Spark(Iceberg/Delta), Snowflake, ClickHouse의 디스크 저장 구조 및 인덱스 기반 Data Skipping 메커니즘 비교</em></p>
+<p align="center"><em>Figure 7: Spark(Iceberg/Delta), Snowflake, ClickHouse의 메타데이터 조회 및 디스크 Data Skipping 시퀀스 비교</em></p>
 
 1. Spark + Apache Iceberg / Delta Lake (Manifest 파일 기반 Pruning):
    - 저장 방식: S3 같은 오브젝트 스토리지에 128MB-1GB 크기의 Parquet 파일들을 저장하고, 별도의 메타데이터 파일(`Manifest File` 또는 `_delta_log`)에 각 Parquet 파일의 컬럼별 `Min/Max` 통계를 기록해 둔다.
