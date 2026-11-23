@@ -1,7 +1,7 @@
 ---
 id: build-optimization
-title: "[CI/CD] GitHub Actions 빌드 속도 70% 단축기: npm 한계 극복부터 Rust 번들러(Rspack) 도입까지"
-sidebar_label: GitHub Actions & Rspack 빌드 최적화
+title: "github Action CI/CD 최적화 및 yarn, RSpack, v8 gc tuning, cache를 통한 빌드 속도 단축"
+sidebar_label: 파이프라인 및 빌드 개선
 sidebar_position: 1
 date: "2026년 8월 23일"
 reading_time: "약 5분"
@@ -73,7 +73,7 @@ const config: Config = {
 
 ---
 
-### 3단계: 워크플로우 튜닝 (V8 GC 방어 및 캐시 계층화)
+### 3단계: 워크플로우 튜닝 (V8 GC 지연 해소 및 캐시 적용)
 
 마지막으로 GitHub Actions 실행 환경(Ubuntu Runner)의 리소스 한계를 보완하기 위해 워크플로우 실행 파라미터와 캐시 구성을 최적화했다.
 
@@ -116,7 +116,7 @@ jobs:
           yarn install --immutable
 ```
 * **V8 메모리 튜닝 (`NODE_OPTIONS`):** Node.js의 기본 힙 메모리 한계(약 1.5GB)에 도달하면서 빈번하게 발생하는 Garbage Collection(GC) 지연을 줄이기 위해 한도를 4GB(`4096`)로 확장했다. 또한 불필요한 `SOURCEMAP` 생성을 비활성화했다.
-* **캐시 계층화 (`actions/cache@v4`):** 의존성 디렉터리 외에도 Docusaurus 내부 빌드 캐시(`.docusaurus`, `node_modules/.cache/webpack`)를 캐싱 대상에 추가했다. 이를 통해 변경된 마크다운 페이지만 선별 처리하는 Incremental Build가 정상 동작하도록 구성했다.
+* **캐시 적용 (`actions/cache@v4`):** 의존성 디렉터리 외에도 Docusaurus 내부 빌드 캐시(`.docusaurus`, `node_modules/.cache/webpack`)를 캐싱 대상에 추가했다. 이를 통해 변경된 마크다운 페이지만 선별 처리하는 Incremental Build가 정상 동작하도록 구성했다.
 
 - **3단계 시간 단축 결과:**
   - 캐시 재사용 및 오버헤드 감소: 10초 ➔ 2초 (Cache Hit)
