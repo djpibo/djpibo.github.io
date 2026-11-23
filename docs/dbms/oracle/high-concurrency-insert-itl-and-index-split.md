@@ -53,27 +53,37 @@ packet-beta
 ### 1.1. ITL 슬롯의 역할과 내부 바이트 구조
 트랜잭션이 특정 블록 내부의 데이터를 수정(INSERT/UPDATE/DELETE)하려면, 먼저 해당 블록 헤더에 자신이 이 블록을 변경하고 있음을 등록해야 한다. 이 등록 장부가 바로 ITL(Interested Transaction List) 슬롯이다.
 - **슬롯당 크기**: 슬롯 1개당 약 24바이트 고정 메모리 공간을 소비한다.
-- **기록 내용**: XID(트랜잭션 식별자), UBA(Undo Block Address), Lock Flags, Commit SCN 등이 기록된다.
-- **INITRANS**: 블록이 처음 포맷팅될 때 기본으로 확보해 둘 ITL 슬롯의 개수다. 테이블은 기본 1, 인덱스는 기본 2로 생성된다.
+- **기록 내용**: 어떤 세션이 어느 테이블 블록을 수정할지에 대한 정보를 가지고 있기 위해 XID(트랜잭션 식별자), UBA(Undo Block Address), Lock Flags, Commit SCN 등이 기록되어 
+- **INITRANS**: 블록이 처음 포맷팅될 때 기본으로 확보해 둘 ITL 슬롯의 개수다. 테이블은 기본 1, 인덱스는 기본 2로 생성된다. 인덱스는 leaf split을 처리하기 위해 별도로 한 개가 더 존재한다.
 
 ### 1.2. 동시 트랜잭션 유입 시 ITL 처리 흐름
-복수의 세션이 동일한 8KB 블록에 동시에 접근해 서로 다른 행을 작업할 때, 블록 헤더 내부에서는 다음 순서로 슬롯 할당이 이루어진다.
+다수의 세션이 동일한 8KB 블록에 동시에 접근해 서로 다른 행을 작업할 때 블록 헤더 내부에서는 다음 순서로 슬롯 할당이 이루어진다.
 
 ```mermaid
-flowchart TD
-    A["신규 트랜잭션 진입<br/>(블록 내 변경 시도)"] --> B{{"재사용 가능한<br/>ITL 슬롯 존재 여부"}}
-    B -- "존재함 (커밋 완료된 슬롯)" --> C["기존 슬롯 덮어쓰기<br/>(Commit SCN 갱신 후 즉시 작업)"]
-    B -- "없음 (모든 슬롯 사용 중)" --> D{{"블록 내 여유 공간<br/>(PCTFREE 24B 이상) 존재?"}}
-    D -- "공간 있음" --> E["PCTFREE에서 24B 할당하여<br/>ITL 슬롯 동적 생성 (동적 확장)"]
-    D -- "공간 고갈됨 (0%)" --> F["대기 상태 진입<br/>enq: TX - allocate ITL entry"]
-    F --> G["선행 트랜잭션 중 하나가 COMMIT할 때까지 블로킹"]
+sequenceDiagram
+    participant TxN as 신규 트랜잭션
+    participant Header as Block Header (ITL Slots)
+    participant Free as Free Space (PCTFREE)
+    participant Tx1 as 선행 트랜잭션
 
-    class A action;
-    class B,D branch;
-    class C,E normal;
-    class F,G alert;
+    TxN->>Header: 블록 변경 시도 -> 사용 가능한 ITL 슬롯 요청
+
+    alt 1. 커밋 완료된 재사용 가능 슬롯 존재
+        Header-->>TxN: 기존 슬롯 덮어쓰기 (Commit SCN 갱신 후 즉시 작업)
+    else 2. 모든 ITL 슬롯 사용 중 -> PCTFREE 확인
+        Header->>Free: ITL 동적 확장용 24B 할당 요청
+        alt 여유 공간 (24B 이상) 존재
+            Free-->>Header: 24B 할당 -> ITL 슬롯 동적 생성 (최대 255개)
+            Header-->>TxN: 신규 슬롯 할당 완료 -> 즉시 작업 진행
+        else 여유 공간 고갈 (24B 미만)
+            Free-->>Header: 할당 불가 (공간 부족)
+            Note over TxN,Header: 대기 진입: enq: TX - allocate ITL entry (블로킹)
+            Tx1->>Header: 선행 트랜잭션 COMMIT (슬롯 재사용 가능 상태로 전환)
+            Header-->>TxN: 대기 해제 -> 반환된 슬롯 획득 후 작업 재개
+        end
+    end
 ```
-<p align="center"><em>Figure 2: 동시 트랜잭션 유입 시 ITL 슬롯 할당 및 경합 메커니즘</em></p>
+<p align="center"><em>Figure 2: 동시 트랜잭션 유입 시 ITL 슬롯 할당 및 경합 시퀀스</em></p>
 
 1. **슬롯 재사용**: 선행 트랜잭션이 COMMIT을 수행하면 해당 ITL 슬롯은 물리적으로 삭제되지 않는다. 슬롯 내부에 Commit SCN이 기록되면서 '재사용 가능' 마킹이 된다. 이후 들어온 세션은 이 슬롯을 다시 할당받아 즉시 사용한다.
 2. **동적 확장**: 비어 있는 슬롯이 없고 동시 트랜잭션 수가 INITRANS를 초과하면, 블록 내 남아 있는 여유 공간(PCTFREE)에서 24바이트를 쪼개어 ITL 슬롯을 최대 MAXTRANS(10g 이후 255 고정)까지 동적으로 늘린다.
