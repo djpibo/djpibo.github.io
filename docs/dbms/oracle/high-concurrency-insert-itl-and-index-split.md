@@ -1,25 +1,27 @@
 ---
 id: high-concurrency-insert-itl-and-index-split
-title: "대규모 트랜잭션 환경의 결제 INSERT 내부 동작: ITL 경합, Leaf Split, COMMIT 동기화 대응"
-sidebar_label: 결제 대량 INSERT & ITL/인덱스 진단
+title: "enq: TX - allocate ITL entry, Leaf Split"
+sidebar_label: ITL waits
 sidebar_position: 7
 date: "2026년 9월 13일"
 reading_time: "약 11분"
 ---
 
-# 대규모 트랜잭션 환경의 결제 INSERT 내부 동작: ITL 경합, Leaf Split, COMMIT 동기화 대응
+# 대량 세션이 한 개의 테이블(인덱스)에 UPDATE/INSERT 수행시 발생하는 enq: TX - allocate ITL entry, Leaf Split 현상과 해소 방안
 
 프로모션이나 타임 세일이 시작되는 00시 정각에는 온라인 주문과 결제 요청이 순간적으로 폭증한다.  
-이 시점 결제 테이블(`PAYMENT`, `PAYMENT_HIST`)에는 초당 수천에서 수만 건에 달하는 INSERT 트랜잭션이 동시에 진입한다.
+이 시점 결제 테이블((예시)`PAYMENT`, `PAYMENT_HIST`)에는 초당 수천에서 수만 건에 달하는 UPDATE/INSERT 트랜잭션이 동시에 발생한다.
 
-이때 애플리케이션 계층에서는 DB Connection Pool 전량 소진과 함께 `Socket read timed out` 에러가 발생하며 장애로 이어지는 경우가 있다.  
-이러한 지연을 마주했을 때 흔히 두 가지 오판을 내리기 쉽다:
-1. "커밋이 느려서 뒤로 다 밀리고 있다."
-2. "블록 헤더 동시성 부족이니 INITRANS를 100 이상으로 대폭 올려두면 해결된다."
+(내가 다니는 회사 입장에서는 분당 결제건수가 8,000건이 넘어가는 순간 발생했다. 물론 이러한 수치는 애플리케이션의 분산 트랜잭션 여부, DB CPU Core 차이에 따라 달라질 수 있기에 범용적으로 쓰이는 절대적 수치는 아니다.)
 
-그러나 Oracle 데이터베이스의 내부 블록 아키텍처와 트랜잭션 처리 메커니즘을 분석해보면, 병목이 발생하는 실제 지점은 COMMIT 명령어가 아닌 선행 INSERT 단계의 물리 블록 경합이며, 무분별한 INITRANS 상향은 심각한 영구적 공간 낭비와 캐시 효율 저하를 부를 수 있으니 꼭 사전 주의를 요한다.
+이때 WAS 서버에서는 대기가 걸려 DB Connection Pool 전량 소진과 함께 `Socket read timed out` 에러가 발생하며 주문 실패와 같은 장애로 이어지는 경우가 있다.  
+이러한 지연을 마주했을 때 개발자와 DBA 입장에선 두 가지 오판을 내리기 쉽다:
+1. "DB CPU가 부족해서 커밋이 느려졌다."
+2. "블록 헤더 동시성 부족이니 INITRANS를 100 이상으로 대폭 올려두면 무조건 해결된다."
 
-본 글에서는 00시 결제 폭증 상황에서 발생하는 물리 블록 레벨의 동작 과정, ITL과 인덱스 Leaf Split의 연쇄 영향, 그리고 대기 이벤트 분석을 통한 정확한 진단 기준을 정리한다.
+하지만 Oracle 데이터베이스의 내부 블록 아키텍처와 트랜잭션 처리 메커니즘을 분석해보면 병목이 발생하는 실제 지점은 COMMIT 수행 이전인 INSERT 단계의 물리 블록 경합이며 무분별한 INITRANS 상향은 디스크 공간 낭비와 조회 성능 저하를 유발할 수 있다.
+
+이번 글에서는 00시 결제 트래픽 급증 상황에서 발생하는 테이블 블록에서의 ITL 처리 과정과 인덱스 Leaf Split 현상 그리고 대기 이벤트 분석을 통한 정확한 진단 기준을 정리한다.
 
 ---
 
@@ -28,36 +30,27 @@ reading_time: "약 11분"
 Oracle의 최소 물리 I/O 및 저장 단위는 8KB 데이터 블록(Data Block)이다. 테이블 세그먼트와 인덱스 세그먼트 모두 이 8KB 블록을 동일하게 기본 단위로 사용한다.
 
 ```mermaid
-flowchart TB
-    subgraph DataBlock["8KB 데이터 블록 내부 물리 구조 (Data Block Layout)"]
-        direction TB
-        subgraph Header["1. Block Header (메타데이터 및 트랜잭션 관리)"]
-            direction LR
-            HeaderMeta["Block Type / DBA / Checksum"]
-            subgraph ITL["ITL Slots (Interested Transaction List)"]
-                ITL1["ITL Slot 1<br/>(24B)"]
-                ITL2["ITL Slot 2<br/>(24B)"]
-                ITLN["ITL Slot N...<br/>(동적 확장)"]
-            end
-        end
-
-        subgraph FreeSpace["2. Free Space (PCTFREE 여유 공간)"]
-            FreeDesc["동적 ITL 확장 및 기존 Row 길이 증가 대비 예약 공간"]
-        end
-
-        subgraph Body["3. Row Data (또는 Index Leaf Entries)"]
-            RowDesc["실제 테이블 행(Row) 데이터 또는 정렬된 인덱스 키 + ROWID"]
-        end
-    end
-
-    class HeaderMeta headerStyle;
-    class ITL1,ITL2,ITLN itlStyle;
-    class FreeDesc freeStyle;
-    class RowDesc bodyStyle;
+---
+config:
+  packet:
+    bitsPerRow: 24
+    bitWidth: 28
+    rowHeight: 44
+---
+packet-beta
+  title Oracle 8KB Data Block Physical Layout (24-Byte ITL Slot Scale)
+  0-23: "1. Block Header (KCBH/KTBBH: Block Type, DBA, SCN, Checksum)"
+  24-47: "ITL Slot 1 (24B): XID | UBA | Flags | Commit SCN"
+  48-71: "ITL Slot 2 (24B): XID | UBA | Flags | Commit SCN"
+  72-95: "ITL Slot N... (+24B 동적 확장 -> 아래 Free Space로 성장)"
+  96-119: "Table / Row Directory (블록 내 각 Row 시작 Offset 포인터)"
+  120-167: "2. Free Space (PCTFREE 여유 공간 — 동적 ITL & Row 증가 대비)"
+  168-235: "3. Row Data / Index Leaf Entries (실제 데이터 — 블록 끝에서 위로 성장)"
+  236-239: "Tail (4B)"
 ```
-<p align="center"><em>Figure 1: 8KB 데이터 블록 내부의 물리 계층 구조 및 ITL 슬롯 배치</em></p>
+<p align="center"><em>Figure 1: 8KB 데이터 블록 내부의 바이트 계층 구조 및 24바이트 ITL 슬롯 배치</em></p>
 
-### 1.1. ITL 슬롯의 역할과 24바이트의 공간 소비
+### 1.1. ITL 슬롯의 역할과 내부 바이트 구조
 트랜잭션이 특정 블록 내부의 데이터를 수정(INSERT/UPDATE/DELETE)하려면, 먼저 해당 블록 헤더에 자신이 이 블록을 변경하고 있음을 등록해야 한다. 이 등록 장부가 바로 ITL(Interested Transaction List) 슬롯이다.
 - **슬롯당 크기**: 슬롯 1개당 약 24바이트 고정 메모리 공간을 소비한다.
 - **기록 내용**: XID(트랜잭션 식별자), UBA(Undo Block Address), Lock Flags, Commit SCN 등이 기록된다.
